@@ -46,6 +46,8 @@ if __name__ == "__main__":
                         help="the wandb's project name")
     parser.add_argument('--wandb-entity', type=str, default=None,
                         help="the entity (team) of wandb's project")
+    parser.add_argument('--resume', type=lambda x:bool(strtobool(x)), default=False,
+                        help='whether to resume training from a wandb run with the same identifiers.')
 
     # Algorithm specific arguments
     parser.add_argument('--n-minibatch', type=int, default=4,
@@ -151,13 +153,17 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
         return obs, rews, dones, newinfos
 
 # TRY NOT TO MODIFY: setup the environment
-experiment_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+experiment_name = f"{args.gym_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
 writer = SummaryWriter(f"runs/{experiment_name}")
 writer.add_text('hyperparameters', "|param|value|\n|-|-|\n%s" % (
         '\n'.join([f"|{key}|{value}|" for key, value in vars(args).items()])))
 if args.prod_mode:
     import wandb
-    run = wandb.init(
+    run_id = args.resume or wandb.util.generate_id()
+    resume = 'must' if args.resume else False
+    experiment_name += f'_{run_id}'
+    print(f"Running experiment '{experiment_name}'")
+    run = wandb.init(id=run_id, resume=resume,
         project=args.wandb_project_name, entity=args.wandb_entity,
         # sync_tensorboard=True,
         config=vars(args), name=experiment_name, monitor_gym=True, save_code=True)
@@ -335,6 +341,7 @@ for update in range(starting_update, num_updates+1):
         optimizer.param_groups[0]['lr'] = lrnow
 
     # TRY NOT TO MODIFY: prepare the execution of the game.
+    # Traverse environment for episodes
     for step in range(0, args.num_steps):
         envs.render()
         global_step += 1 * args.num_envs
@@ -344,7 +351,7 @@ for update in range(starting_update, num_updates+1):
         with torch.no_grad():
             values[step] = agent.get_value(obs[step]).flatten()
             action, logproba, _, invalid_action_masks[step], real_invalid_action_masks = agent.get_action(obs[step], envs=envs)
-
+        # Player action
         actions[step] = action
         logprobs[step] = logproba
 
@@ -425,7 +432,7 @@ for update in range(starting_update, num_updates+1):
     b_values = values.reshape(-1)
     b_invalid_action_masks = invalid_action_masks.reshape((-1,)+invalid_action_shape)
 
-    # Optimizaing the policy and value network
+    # Optimizing the policy and value network
     inds = np.arange(args.batch_size,)
     for i_epoch_pi in range(args.update_epochs):
         np.random.shuffle(inds)

@@ -45,6 +45,8 @@ if __name__ == "__main__":
                         help="the wandb's project name")
     parser.add_argument('--wandb-entity', type=str, default=None,
                         help="the entity (team) of wandb's project")
+    parser.add_argument('--resume', type=str, default=None,
+                        help='if used, supply the ID of the run to resume.')
 
     # Algorithm specific arguments
     parser.add_argument('--n-minibatch', type=int, default=4,
@@ -168,14 +170,17 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
         return obs, rews, dones, newinfos
 
 # TRY NOT TO MODIFY: setup the environment
-experiment_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+experiment_name = f"{args.gym_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
 writer = SummaryWriter(f"runs/{experiment_name}")
 writer.add_text('hyperparameters', "|param|value|\n|-|-|\n%s" % (
         '\n'.join([f"|{key}|{value}|" for key, value in vars(args).items()])))
 if args.prod_mode:
     import wandb
-    run = wandb.init(
-        project=args.wandb_project_name, entity=args.wandb_entity,
+    run_id = args.resume or wandb.util.generate_id()
+    resume = 'must' if args.resume else False
+    experiment_name += f'_{run_id}'
+    print(f"Running experiment '{experiment_name}'")
+    run = wandb.init(id=run_id, resume=resume,        project=args.wandb_project_name, entity=args.wandb_entity,
         # sync_tensorboard=True,
         config=vars(args), name=experiment_name, monitor_gym=True, save_code=True)
     wandb.tensorboard.patch(save=False)

@@ -46,6 +46,8 @@ if __name__ == "__main__":
                         help="the wandb's project name")
     parser.add_argument('--wandb-entity', type=str, default=None,
                         help="the entity (team) of wandb's project")
+    parser.add_argument('--resume', type=str, default=None,
+                        help='if used, supply the ID of the run to resume.')
 
     # Algorithm specific arguments
     parser.add_argument('--n-minibatch', type=int, default=4,
