@@ -186,7 +186,7 @@ envs = MicroRTSGridModeVecEnv(
         [microrts_ai.randomBiasedAI for _ in range(2)] + \
         [microrts_ai.lightRushAI for _ in range(2)] + \
         [microrts_ai.workerRushAI for _ in range(2)],
-    map_path="maps/8x8/basesWorkers8x8.xml",
+    map_path="maps/16x16/basesWorkers16x16.xml",
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
 envs = MicroRTSStatsRecorder(envs, args.gamma)
@@ -319,23 +319,23 @@ class Agent(nn.Module):
         logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
         entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
         num_predicted_parameters = len(envs.action_space.nvec) - 1
-        logprob = logprob.T.view(-1, self.mapsize, num_predicted_parameters)
-        entropy = entropy.T.view(-1, self.mapsize, num_predicted_parameters)
-        action = action.T.view(-1, self.mapsize, num_predicted_parameters)
-        invalid_action_masks = invalid_action_masks.view(-1, self.mapsize, envs.action_space.nvec[1:].sum()+1)
+        logprob = logprob.T.view(-1, 256, num_predicted_parameters)
+        entropy = entropy.T.view(-1, 256, num_predicted_parameters)
+        action = action.T.view(-1, 256, num_predicted_parameters)
+        invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum()+1)
         return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
 
     def get_value(self, x):
         return self.critic(self.forward(x))
 
-mapsize = 8*8
-agent = Agent(mapsize).to(device)
+agent = Agent().to(device)
 optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 if args.anneal_lr:
     # https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/ppo2/defaults.py#L20
     lr = lambda f: f * args.learning_rate
 
 # ALGO Logic: Storage for epoch data
+mapsize = 16*16
 action_space_shape = (mapsize, envs.action_space.shape[0] - 1)
 invalid_action_shape = (mapsize, envs.action_space.nvec[1:].sum()+1)
 

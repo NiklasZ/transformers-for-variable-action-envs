@@ -1,5 +1,3 @@
-# http://proceedings.mlr.press/v97/han19a/han19a.pdf
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,9 +10,10 @@ from distutils.util import strtobool
 import numpy as np
 import gym
 import gym_microrts
-from gym.wrappers import TimeLimit, Monitor
-from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
+from gym_microrts.envs.vec_env import MicroRTSVecEnv
 from gym_microrts import microrts_ai
+from gym.wrappers import TimeLimit, Monitor
+
 from gym.spaces import Discrete, Box, MultiBinary, MultiDiscrete, Space
 import time
 import random
@@ -52,11 +51,9 @@ if __name__ == "__main__":
     # Algorithm specific arguments
     parser.add_argument('--n-minibatch', type=int, default=4,
                         help='the number of mini batch')
-    parser.add_argument('--num-bot-envs', type=int, default=24,
-                        help='the number of bot game environment; 16 bot envs measn 16 games')
-    parser.add_argument('--num-selfplay-envs', type=int, default=0,
-                        help='the number of self play envs; 16 self play envs means 8 games')
-    parser.add_argument('--num-steps', type=int, default=256,
+    parser.add_argument('--num-envs', type=int, default=24,
+                        help='the number of parallel game environment')
+    parser.add_argument('--num-steps', type=int, default=512,
                         help='the number of steps per game environment')
     parser.add_argument('--gamma', type=float, default=0.99,
                         help='the discount factor gamma')
@@ -90,7 +87,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.seed:
         args.seed = int(time.time())
-args.num_envs = args.num_selfplay_envs + args.num_bot_envs
+
 args.batch_size = int(args.num_envs * args.num_steps)
 args.minibatch_size = int(args.batch_size // args.n_minibatch)
 
@@ -126,6 +123,26 @@ class VecMonitor(VecEnvWrapper):
                 self.eplens[i] = 0
                 newinfos[i] = info
         return obs, rews, dones, newinfos
+
+class VecPyTorch(VecEnvWrapper):
+    def __init__(self, venv, device):
+        super(VecPyTorch, self).__init__(venv)
+        self.device = device
+
+    def reset(self):
+        obs = self.venv.reset()
+        obs = torch.from_numpy(obs).float().to(self.device)
+        return obs
+
+    def step_async(self, actions):
+        actions = actions.cpu().numpy()
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        obs, reward, done, info = self.venv.step_wait()
+        obs = torch.from_numpy(obs).float().to(self.device)
+        reward = torch.from_numpy(reward).unsqueeze(dim=1).float()
+        return obs, reward, done, info
 
 class MicroRTSStatsRecorder(VecEnvWrapper):
     def __init__(self, env, gamma):
@@ -177,39 +194,34 @@ random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 torch.backends.cudnn.deterministic = args.torch_deterministic
-envs = MicroRTSGridModeVecEnv(
-    num_selfplay_envs=args.num_selfplay_envs,
-    num_bot_envs=args.num_bot_envs,
+envs = MicroRTSVecEnv(
+    num_envs=args.num_envs,
     max_steps=2000,
     render_theme=2,
-    ai2s=[microrts_ai.coacAI for _ in range(args.num_bot_envs-6)] + \
+    ai2s=[microrts_ai.coacAI for _ in range(args.num_envs-6)] + \
         [microrts_ai.randomBiasedAI for _ in range(2)] + \
         [microrts_ai.lightRushAI for _ in range(2)] + \
         [microrts_ai.workerRushAI for _ in range(2)],
-    map_path="maps/8x8/basesWorkers8x8.xml",
+    map_path="maps/16x16/basesWorkers16x16.xml",
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
 envs = MicroRTSStatsRecorder(envs, args.gamma)
 envs = VecMonitor(envs)
+envs = VecPyTorch(envs, device)
 if args.capture_video:
     envs = VecVideoRecorder(envs, f'videos/{experiment_name}',
                             record_video_trigger=lambda x: x % 1000000 == 0, video_length=2000)
-# if args.prod_mode:
-#     envs = VecPyTorch(
-#         SubprocVecEnv([make_env(args.gym_id, args.seed+i, i) for i in range(args.num_envs)], "fork"),
-#         device
-#     )
 assert isinstance(envs.action_space, MultiDiscrete), "only MultiDiscrete action space is supported"
 
 # ALGO LOGIC: initialize agent here:
 class CategoricalMasked(Categorical):
-    def __init__(self, probs=None, logits=None, validate_args=None, masks=[], sw=None):
+    def __init__(self, probs=None, logits=None, validate_args=None, masks=[]):
         self.masks = masks
         if len(self.masks) == 0:
             super(CategoricalMasked, self).__init__(probs, logits, validate_args)
         else:
-            self.masks = masks.bool()
-            logits = torch.where(self.masks, logits, torch.tensor(-1e+8, device=device))
+            self.masks = masks.type(torch.BoolTensor).to(device)
+            logits = torch.where(self.masks, logits, torch.tensor(-1e+8).to(device))
             super(CategoricalMasked, self).__init__(probs, logits, validate_args)
     
     def entropy(self):
@@ -226,14 +238,6 @@ class Scale(nn.Module):
 
     def forward(self, x):
         return x * self.scale
-
-class Transpose(nn.Module):
-    def __init__(self, permutation):
-        super().__init__()
-        self.permutation = permutation
-
-    def forward(self, x):
-        return x.permute(self.permutation)
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -277,9 +281,8 @@ class ConvSequence(nn.Module):
         return (self._out_channels, (h + 1) // 2, (w + 1) // 2)
 
 class Agent(nn.Module):
-    def __init__(self, mapsize=16*16):
+    def __init__(self, frames=4):
         super(Agent, self).__init__()
-        self.mapsize = mapsize
         h, w, c = envs.observation_space.shape
         shape = (c, h, w)
         conv_seqs = []
@@ -294,7 +297,7 @@ class Agent(nn.Module):
             nn.ReLU(),
         ]
         self.network = nn.Sequential(*conv_seqs)
-        self.actor = layer_init(nn.Linear(256, self.mapsize*envs.action_space.nvec[1:].sum()), std=0.01)
+        self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
         self.critic = layer_init(nn.Linear(256, 1), std=1)
 
     def forward(self, x):
@@ -302,62 +305,57 @@ class Agent(nn.Module):
 
     def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
         logits = self.actor(self.forward(x))
-        grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-        split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
+        split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
         
         if action is None:
-            invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-            invalid_action_masks = invalid_action_masks.view(-1,invalid_action_masks.shape[-1])
-            split_invalid_action_masks = torch.split(invalid_action_masks[:,1:], envs.action_space.nvec[1:].tolist(), dim=1)
-            multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in zip(split_logits, split_invalid_action_masks)]
-            action = torch.stack([categorical.sample() for categorical in multi_categoricals])
+            # 1. select source unit based on source unit mask
+            source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(args.num_envs, -1))
+            multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
+            action_components = [multi_categoricals[0].sample()]
+            # 2. select action type and parameter section based on the
+            #    source-unit mask of action type and parameters
+            # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(args.num_envs, -1))
+            source_unit_action_mask = torch.Tensor(
+                np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(args.num_envs, -1))
+            split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
+            multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in zip(split_logits[1:], split_suam)]
+            invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
+            action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
+            action = torch.stack(action_components)
         else:
-            invalid_action_masks = invalid_action_masks.view(-1,invalid_action_masks.shape[-1])
-            action = action.view(-1,action.shape[-1]).T
-            split_invalid_action_masks = torch.split(invalid_action_masks[:,1:], envs.action_space.nvec[1:].tolist(), dim=1)
+            split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
             multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in zip(split_logits, split_invalid_action_masks)]
         logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
         entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-        num_predicted_parameters = len(envs.action_space.nvec) - 1
-        logprob = logprob.T.view(-1, self.mapsize, num_predicted_parameters)
-        entropy = entropy.T.view(-1, self.mapsize, num_predicted_parameters)
-        action = action.T.view(-1, self.mapsize, num_predicted_parameters)
-        invalid_action_masks = invalid_action_masks.view(-1, self.mapsize, envs.action_space.nvec[1:].sum()+1)
-        return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
+        return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
 
     def get_value(self, x):
         return self.critic(self.forward(x))
 
-mapsize = 8*8
-agent = Agent(mapsize).to(device)
+agent = Agent().to(device)
 optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 if args.anneal_lr:
     # https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/ppo2/defaults.py#L20
     lr = lambda f: f * args.learning_rate
 
 # ALGO Logic: Storage for epoch data
-action_space_shape = (mapsize, envs.action_space.shape[0] - 1)
-invalid_action_shape = (mapsize, envs.action_space.nvec[1:].sum()+1)
-
 obs = torch.zeros((args.num_steps, args.num_envs) + envs.observation_space.shape).to(device)
-actions = torch.zeros((args.num_steps, args.num_envs) + action_space_shape).to(device)
+actions = torch.zeros((args.num_steps, args.num_envs) + envs.action_space.shape).to(device)
 logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
 rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
 values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + invalid_action_shape).to(device)
+invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + (envs.action_space.nvec.sum(),)).to(device)
 # TRY NOT TO MODIFY: start the game
 global_step = 0
 start_time = time.time()
 # Note how `next_obs` and `next_done` are used; their usage is equivalent to
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/84a7582477fb0d5c82ad6d850fe476829dddd2e1/a2c_ppo_acktr/storage.py#L60
-next_obs = torch.Tensor(envs.reset()).to(device)
+next_obs = envs.reset()
 next_done = torch.zeros(args.num_envs).to(device)
 num_updates = args.total_timesteps // args.batch_size
-
 ## CRASH AND RESUME LOGIC:
 starting_update = 1
-from jpype.types import JArray, JInt
 if args.prod_mode and wandb.run.resumed:
     starting_update = run.summary.get('charts/update') + 1
     global_step = starting_update * args.batch_size
@@ -368,7 +366,6 @@ if args.prod_mode and wandb.run.resumed:
     agent.load_state_dict(torch.load(f"models/{experiment_name}/agent.pt", map_location=device))
     agent.eval()
     print(f"resumed at update {starting_update}")
-
 for update in range(starting_update, num_updates+1):
     # Annealing the rate if instructed to do so.
     if args.anneal_lr:
@@ -382,45 +379,18 @@ for update in range(starting_update, num_updates+1):
         global_step += 1 * args.num_envs
         obs[step] = next_obs
         dones[step] = next_done
+
         # ALGO LOGIC: put action logic here
         with torch.no_grad():
             values[step] = agent.get_value(obs[step]).flatten()
             action, logproba, _, invalid_action_masks[step] = agent.get_action(obs[step], envs=envs)
 
-        actions[step] = action
+        actions[step] = action.T
         logprobs[step] = logproba
 
         # TRY NOT TO MODIFY: execute the game and log data.
-        # the real action adds the source units
-        real_action = torch.cat([
-            torch.stack(
-                [torch.arange(0, mapsize, device=device) for i in range(envs.num_envs)
-        ]).unsqueeze(2), action], 2)
-        
-        # at this point, the `real_action` has shape (num_envs, map_height*map_width, 8)
-        # so as to predict an action for each cell in the map; this obviously include a 
-        # lot of invalid actions at cells for which no source units exist, so the rest of 
-        # the code removes these invalid actions to speed things up
-        real_action = real_action.cpu().numpy()
-        valid_actions = real_action[invalid_action_masks[step][:,:,0].bool().cpu().numpy()]
-        valid_actions_counts = invalid_action_masks[step][:,:,0].sum(1).long().cpu().numpy()
-        java_valid_actions = []
-        valid_action_idx = 0
-        for env_idx, valid_action_count in enumerate(valid_actions_counts):
-            java_valid_action = []
-            for c in range(valid_action_count):
-                java_valid_action += [JArray(JInt)(valid_actions[valid_action_idx])]
-                valid_action_idx += 1
-            java_valid_actions += [JArray(JArray(JInt))(java_valid_action)]
-        java_valid_actions = JArray(JArray(JArray(JInt)))(java_valid_actions)
-        
-        try:
-            next_obs, rs, ds, infos = envs.step(java_valid_actions)
-            next_obs = torch.Tensor(next_obs).to(device)
-        except Exception as e:
-            e.printStackTrace()
-            raise
-        rewards[step], next_done = torch.Tensor(rs).to(device), torch.Tensor(ds).to(device)
+        next_obs, rs, ds, infos = envs.step(action.T)
+        rewards[step], next_done = rs.view(-1), torch.Tensor(ds).to(device)
 
         for info in infos:
             if 'episode' in info.keys():
@@ -461,26 +431,28 @@ for update in range(starting_update, num_updates+1):
     # flatten the batch
     b_obs = obs.reshape((-1,)+envs.observation_space.shape)
     b_logprobs = logprobs.reshape(-1)
-    b_actions = actions.reshape((-1,)+action_space_shape)
+    b_actions = actions.reshape((-1,)+envs.action_space.shape)
     b_advantages = advantages.reshape(-1)
     b_returns = returns.reshape(-1)
     b_values = values.reshape(-1)
-    b_invalid_action_masks = invalid_action_masks.reshape((-1,)+invalid_action_shape)
+    b_invalid_action_masks = invalid_action_masks.reshape((-1, invalid_action_masks.shape[-1]))
 
     # Optimizaing the policy and value network
+    target_agent = Agent().to(device)
     inds = np.arange(args.batch_size,)
     for i_epoch_pi in range(args.update_epochs):
         np.random.shuffle(inds)
+        target_agent.load_state_dict(agent.state_dict())
         for start in range(0, args.batch_size, args.minibatch_size):
             end = start + args.minibatch_size
             minibatch_ind = inds[start:end]
             mb_advantages = b_advantages[minibatch_ind]
             if args.norm_adv:
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-            # raise
+
             _, newlogproba, entropy, _ = agent.get_action(
                 b_obs[minibatch_ind],
-                b_actions.long()[minibatch_ind],
+                b_actions.long()[minibatch_ind].T,
                 b_invalid_action_masks[minibatch_ind],
                 envs)
             ratio = (newlogproba - b_logprobs[minibatch_ind]).exp()
@@ -511,6 +483,18 @@ for update in range(starting_update, num_updates+1):
             loss.backward()
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
+
+        if args.kle_stop:
+            if approx_kl > args.target_kl:
+                break
+        if args.kle_rollback:
+            if (b_logprobs[minibatch_ind] - agent.get_action(
+                    b_obs[minibatch_ind],
+                    b_actions.long()[minibatch_ind].T,
+                    b_invalid_action_masks[minibatch_ind],
+                    envs)[1]).mean() > args.target_kl:
+                agent.load_state_dict(target_agent.state_dict())
+                break
 
     ## CRASH AND RESUME LOGIC:
     if args.prod_mode:

@@ -202,7 +202,7 @@ envs = MicroRTSVecEnv(
         [microrts_ai.randomBiasedAI for _ in range(2)] + \
         [microrts_ai.lightRushAI for _ in range(2)] + \
         [microrts_ai.workerRushAI for _ in range(2)],
-    map_path="maps/16x16/basesWorkers16x16.xml",
+    map_path="maps/8x8/basesWorkers8x8.xml",
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
 envs = MicroRTSStatsRecorder(envs, args.gamma)
