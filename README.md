@@ -12,7 +12,7 @@ We checkpoint our agents' states and performance using [Weights and Biases](http
 ```
 
 So for example:
-```python ppo_diverse_impala.py  --exp-name testing-resume --gym-id Niklas --resume 2cfbvqk3```
+```python ppo_diverse_impala.py  --prod-mode --exp-name testing-resume --gym-id Niklas --resume 2cfbvqk3```
 
 The `run_id` can be seen in the run STDOUT:
 ```

@@ -177,15 +177,19 @@ random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 torch.backends.cudnn.deterministic = args.torch_deterministic
+
+ai_opponents = [microrts_ai.coacAI for _ in range(args.num_bot_envs - 6)] + \
+         [microrts_ai.randomBiasedAI for _ in range(2)] + \
+         [microrts_ai.lightRushAI for _ in range(2)] + \
+         [microrts_ai.workerRushAI for _ in range(2)]
+ai_opponent_names = [ai.__name__ for ai in ai_opponents]
+
 envs = MicroRTSGridModeVecEnv(
     num_selfplay_envs=args.num_selfplay_envs,
     num_bot_envs=args.num_bot_envs,
     max_steps=2000,
     render_theme=2,
-    ai2s=[microrts_ai.coacAI for _ in range(args.num_bot_envs-6)] + \
-        [microrts_ai.randomBiasedAI for _ in range(2)] + \
-        [microrts_ai.lightRushAI for _ in range(2)] + \
-        [microrts_ai.workerRushAI for _ in range(2)],
+    ai2s=ai_opponents,
     map_path="maps/8x8/basesWorkers8x8.xml",
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
@@ -422,12 +426,18 @@ for update in range(starting_update, num_updates+1):
             raise
         rewards[step], next_done = torch.Tensor(rs).to(device), torch.Tensor(ds).to(device)
 
-        for info in infos:
+        for i, info in enumerate(infos):
+            # When an episode ends there will be breakdown of reward by category of shape:
+            # {'WinLossRewardFunction': -1.0, 'ResourceGatherRewardFunction': 8.0, 'ProduceWorkerRewardFunction': 7.0,
+            # 'ProduceBuildingRewardFunction': 0.0, 'AttackRewardFunction': 3.0, 'ProduceCombatUnitRewardFunction': 0.0}
             if 'episode' in info.keys():
                 print(f"global_step={global_step}, episode_reward={info['episode']['r']}")
                 writer.add_scalar("charts/episode_reward", info['episode']['r'], global_step)
                 for key in info['microrts_stats']:
                     writer.add_scalar(f"charts/episode_reward/{key}", info['microrts_stats'][key], global_step)
+                # Add win-loss reward specific to ai opponent:
+                writer.add_scalar(f"charts/episode_reward/WinLossRewardFunction/{ai_opponent_names[i]}",
+                                  info['microrts_stats']['WinLossRewardFunction'], global_step)
                 break
 
     # bootstrap reward if not done. reached the batch limit
@@ -467,7 +477,7 @@ for update in range(starting_update, num_updates+1):
     b_values = values.reshape(-1)
     b_invalid_action_masks = invalid_action_masks.reshape((-1,)+invalid_action_shape)
 
-    # Optimizaing the policy and value network
+    # Optimising the policy and value network
     inds = np.arange(args.batch_size,)
     for i_epoch_pi in range(args.update_epochs):
         np.random.shuffle(inds)
@@ -532,7 +542,7 @@ for update in range(starting_update, num_updates+1):
     if args.kle_stop or args.kle_rollback:
         writer.add_scalar("debug/pg_stop_iter", i_epoch_pi, global_step)
     writer.add_scalar("charts/sps", int(global_step / (time.time() - start_time)), global_step)
-    print("SPS:", int(global_step / (time.time() - start_time)))
+    print("Steps per sec:", int(global_step / (time.time() - start_time)))
 
 envs.close()
 writer.close()

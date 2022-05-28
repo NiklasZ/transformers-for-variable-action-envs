@@ -188,6 +188,12 @@ if args.prod_mode:
     writer = SummaryWriter(f"/tmp/{experiment_name}")
     CHECKPOINT_FREQUENCY = 50
 
+ai_opponents = [microrts_ai.coacAI for _ in range(args.num_bot_envs - 6)] + \
+         [microrts_ai.randomBiasedAI for _ in range(2)] + \
+         [microrts_ai.lightRushAI for _ in range(2)] + \
+         [microrts_ai.workerRushAI for _ in range(2)]
+ai_opponent_names = [ai.__name__ for ai in ai_opponents]
+
 # TRY NOT TO MODIFY: seeding
 device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
 random.seed(args.seed)
@@ -198,10 +204,7 @@ envs = MicroRTSVecEnv(
     num_envs=args.num_envs,
     max_steps=2000,
     render_theme=2,
-    ai2s=[microrts_ai.coacAI for _ in range(args.num_envs-6)] + \
-        [microrts_ai.randomBiasedAI for _ in range(2)] + \
-        [microrts_ai.lightRushAI for _ in range(2)] + \
-        [microrts_ai.workerRushAI for _ in range(2)],
+    ai2s=ai_opponents,
     map_path="maps/8x8/basesWorkers8x8.xml",
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
@@ -516,7 +519,7 @@ for update in range(starting_update, num_updates+1):
     if args.kle_stop or args.kle_rollback:
         writer.add_scalar("debug/pg_stop_iter", i_epoch_pi, global_step)
     writer.add_scalar("charts/sps", int(global_step / (time.time() - start_time)), global_step)
-    print("SPS:", int(global_step / (time.time() - start_time)))
+    print("Steps per sec:", int(global_step / (time.time() - start_time)))
 
 envs.close()
 writer.close()
