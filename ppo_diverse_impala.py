@@ -188,7 +188,7 @@ if args.prod_mode:
     writer = SummaryWriter(f"/tmp/{experiment_name}")
     CHECKPOINT_FREQUENCY = 50
 
-ai_opponents = [microrts_ai.coacAI for _ in range(args.num_bot_envs - 6)] + \
+ai_opponents = [microrts_ai.coacAI for _ in range(args.num_envs - 6)] + \
          [microrts_ai.randomBiasedAI for _ in range(2)] + \
          [microrts_ai.lightRushAI for _ in range(2)] + \
          [microrts_ai.workerRushAI for _ in range(2)]
@@ -395,12 +395,15 @@ for update in range(starting_update, num_updates+1):
         next_obs, rs, ds, infos = envs.step(action.T)
         rewards[step], next_done = rs.view(-1), torch.Tensor(ds).to(device)
 
-        for info in infos:
+        for i, info in enumerate(infos):
             if 'episode' in info.keys():
                 print(f"global_step={global_step}, episode_reward={info['episode']['r']}")
                 writer.add_scalar("charts/episode_reward", info['episode']['r'], global_step)
                 for key in info['microrts_stats']:
                     writer.add_scalar(f"charts/episode_reward/{key}", info['microrts_stats'][key], global_step)
+                # Add win-loss reward specific to ai opponent:
+                writer.add_scalar(f"charts/episode_reward/WinLossRewardFunction/{ai_opponent_names[i]}",
+                                  info['microrts_stats']['WinLossRewardFunction'], global_step)
                 break
 
     # bootstrap reward if not done. reached the batch limit
