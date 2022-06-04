@@ -25,6 +25,7 @@ from stable_baselines3.common.vec_env import VecEnvWrapper, VecVideoRecorder
 from helpers import reshape_observation
 from transformer import Encoder
 
+# TODO on resume I should also set the seed.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')
     # Common arguments
@@ -271,12 +272,12 @@ class Critic(nn.Module):
         self.decoder = layer_init(nn.Linear(self.embed_size, 1), std=1)
 
     # x: network's output: [seqlength(V), batch_dim, embed_size]
-    # player_unit_counts: [batch_dim]
+    # observation_mask: [batch_dim, V]
     # (V is the max number of units across all envs).
     # output: [num_envs]
     # TODO study effects of summation vs. averaging vs. weighting both
     # TODO study effects of using only player vs all outputs.
-    def forward(self, x, player_unit_counts, observation_mask):
+    def forward(self, x, observation_mask):
         x_reshaped = x.permute((1, 0, 2))  # [V, N, embed_size] -> [N, V, embed_size]
         value_preds = torch.squeeze(self.decoder(x_reshaped))
         out = torch.sum(value_preds.masked_fill(observation_mask, 0), axis=1)
@@ -300,21 +301,27 @@ class Actor(nn.Module):
     # x: network's output: [V, num_envs, embed_size]
     # (V is the max number of units across all envs).
     # player_unit_positions: [batch_dim, height * width]
-    # player_unit_counts: [batch_dim]
+    # player_unit_mask: [batch_dim, V]
     # output: [num_envs, env_height * env_width * unit_action_params]
-    def forward(self, x, player_unit_positions, player_unit_counts):
+    def forward(self, x, player_unit_positions, player_unit_mask):
         x_reshaped = x.permute((1, 0, 2))  # [V, N, embed_size] -> [N, V, embed_size]
         N = x_reshaped.shape[0]
         out = torch.zeros(N, self.map_size, self.unit_action_space).to(device)
-        # Iterating over game envs
-        action_preds = self.decoder(x_reshaped[:, :torch.max(player_unit_counts), :])
-        for i, _ in enumerate(x_reshaped):
-            # Assume that the player 1's positions are output first
-            # action_pred = self.decoder(x_reshaped[i, :player_unit_counts[i], :])
-            unit_indices = player_unit_positions[i].nonzero()
-            out[i, unit_indices[:, 0]] = action_preds[i, :player_unit_counts[i], :]
-            # for j, pos in enumerate(player_unit_positions[i]):
-            #     out[i, pos, :] = action_pred[j]
+        max_player_units = torch.max((player_unit_mask == False).count_nonzero(axis=1))
+        trimmed_unit_mask = player_unit_mask[:, :max_player_units]
+        unit_action_x, unit_action_y = (trimmed_unit_mask == False).nonzero(as_tuple=True)
+        action_preds = self.decoder(x_reshaped[:, :max_player_units, :])
+        unit_pos_x, unit_pos_y = player_unit_positions.nonzero(as_tuple=True)
+        # We use masks to find the coordinates of units in the output grid
+        # And then assign the corresponding action
+        out[unit_pos_x, unit_pos_y, :] = action_preds[unit_action_x, unit_action_y, :]
+        # unit_indices = [p.nonzero() for p in player_unit_positions]
+        # action_preds[(player_unit_mask == False).nonzero(),:]
+        # for i in range(N):
+        #     # Assume that the player 1's positions are output first
+        #     out[i, unit_indices[i][:, 0]] = action_preds[i, :entity_counts[i], :]
+        # unit_indices = player_unit_positions[i].nonzero()
+        # out[i, unit_indices[:, 0]] = action_preds[i, :player_unit_counts[i], :]
 
         y = out.view(N, self.map_size * self.unit_action_space)
         return y
@@ -333,7 +340,7 @@ class Agent(nn.Module):
         # TODO I should consider a compacter format that generates an embedding.
         self.embed_size = (mapsize + 5 + 5 + 3 + 8 + 6)
         # Number of encoding layers
-        self.num_layers = 3
+        self.num_layers = 5
         # Picked for divisibility reasons. Will see if there is more wiggle-room here later.
         self.num_heads = 7
         # Ignore dropout for now
@@ -355,16 +362,19 @@ class Agent(nn.Module):
 
     def get_action(self, x,
                    observation_mask,
-                   player_unit_count,
+                   entity_count,
                    player_unit_position,
+                   player_unit_mask,
                    action=None, invalid_action_masks=None, envs=None, ):
         # x_reshaped, bool_mask, player_unit_pos, player_unit_counts = self.reshape_for_transformer(x)
         # There's no point in passing in tensors we will mask out anyway, so we trim them here.
-        max_units_in_batch = torch.max(player_unit_count)
+        max_units_in_batch = torch.max(entity_count)
         trimmed_x = x[:, :max_units_in_batch, :]
-        trimmed_mask = observation_mask[:, :max_units_in_batch]
-        logits = self.actor(self.forward(trimmed_x, trimmed_mask), player_unit_position, player_unit_count)
-
+        trimmed_obs_mask = observation_mask[:, :max_units_in_batch]
+        trimmed_unit_mask = player_unit_mask[:, :max_units_in_batch]
+        logits = self.actor(self.forward(trimmed_x, trimmed_obs_mask),
+                            player_unit_position, trimmed_unit_mask)
+        # TODO: I need to fix the masking of invalid training actions "WARNING: TrainDirection invalid direction"
         # OLD CODE - DO NOT CHANGE
         grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
         split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
@@ -393,12 +403,12 @@ class Agent(nn.Module):
         invalid_action_masks = invalid_action_masks.view(-1, self.mapsize, envs.action_space.nvec[1:].sum() + 1)
         return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
 
-    def get_value(self, x, observation_mask, player_unit_count):
+    def get_value(self, x, observation_mask, entity_count):
         # x_reshaped, bool_mask, _, player_unit_counts = self.reshape_for_transformer(x)
-        max_units_in_batch = torch.max(player_unit_count)
+        max_units_in_batch = torch.max(entity_count)
         trimmed_x = x[:, :max_units_in_batch, :]
         trimmed_mask = observation_mask[:, :max_units_in_batch]
-        return self.critic(self.forward(trimmed_x, trimmed_mask), player_unit_count, trimmed_mask)
+        return self.critic(self.forward(trimmed_x, trimmed_mask), trimmed_mask)
 
 
 mapsize = 8 * 8
@@ -417,10 +427,12 @@ invalid_action_shape = (mapsize, envs.action_space.nvec[1:].sum() + 1)
 
 obs = torch.zeros(
     (args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1], observation_size)).to(device)
-obs_mask = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
-                      dtype=torch.bool).to(device)
-unit_counts = torch.zeros((args.num_steps, args.num_envs), dtype=torch.long).to(device)
+obs_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
+                       dtype=torch.bool).to(device)
+entity_counts = torch.zeros((args.num_steps, args.num_envs), dtype=torch.long).to(device)
 unit_positions = torch.zeros((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1])).to(device)
+unit_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
+                        dtype=torch.bool).to(device)
 
 actions = torch.zeros((args.num_steps, args.num_envs) + action_space_shape).to(device)
 logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -433,8 +445,9 @@ global_step = 0
 start_time = time.time()
 # Note how `next_obs` and `next_done` are used; their usage is equivalent to
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/84a7582477fb0d5c82ad6d850fe476829dddd2e1/a2c_ppo_acktr/storage.py#L60
-next_obs, next_mask, next_unit_count, next_unit_position = reshape_observation(torch.Tensor(envs.reset()).to(device),
-                                                                               device)
+next_obs, next_mask, next_entity_count, next_unit_position, next_unit_mask = reshape_observation(
+    torch.Tensor(envs.reset()).to(device),
+    device)
 next_done = torch.zeros(args.num_envs).to(device)
 num_updates = args.total_timesteps // args.batch_size
 
@@ -466,21 +479,22 @@ for update in range(starting_update, num_updates + 1):
         envs.render()
         global_step += 1 * args.num_envs
         obs[step] = next_obs
-        obs_mask[step] = next_mask
-        unit_counts[step] = next_unit_count
+        obs_masks[step] = next_mask
+        entity_counts[step] = next_entity_count
         unit_positions[step] = next_unit_position
+        unit_masks[step] = next_unit_mask
         dones[step] = next_done
         # ALGO LOGIC: put action logic here
         with torch.no_grad():
             values[step] = agent.get_value(obs[step],
-                                           obs_mask[step],
-                                           unit_counts[step]).flatten()
+                                           obs_masks[step],
+                                           entity_counts[step]).flatten()
             action, logproba, _, invalid_action_masks[step] = agent.get_action(obs[step],
-                                                                               obs_mask[step],
-                                                                               unit_counts[step],
+                                                                               obs_masks[step],
+                                                                               entity_counts[step],
                                                                                unit_positions[step],
+                                                                               unit_masks[step],
                                                                                envs=envs)
-
         actions[step] = action
         logprobs[step] = logproba
 
@@ -496,6 +510,7 @@ for update in range(starting_update, num_updates + 1):
         # lot of invalid actions at cells for which no source units exist, so the rest of
         # the code removes these invalid actions to speed things up
         real_action = real_action.cpu().numpy()
+        # TODO this line could be a hint on how to simplify the initial for loop.
         valid_actions = real_action[invalid_action_masks[step][:, :, 0].bool().cpu().numpy()]
         valid_actions_counts = invalid_action_masks[step][:, :, 0].sum(1).long().cpu().numpy()
         java_valid_actions = []
@@ -508,35 +523,35 @@ for update in range(starting_update, num_updates + 1):
             java_valid_actions += [JArray(JArray(JInt))(java_valid_action)]
         java_valid_actions = JArray(JArray(JArray(JInt)))(java_valid_actions)
 
-        try:
-            raw_obs, rs, ds, infos = envs.step(java_valid_actions)
-            next_obs, next_mask, next_unit_count, next_unit_position = reshape_observation(
-                torch.Tensor(raw_obs).to(device), device)
-        except Exception as e:
-            e.printStackTrace()
-            raise
-        rewards[step], next_done = torch.Tensor(rs).to(device), torch.Tensor(ds).to(device)
+        with torch.no_grad():
+            try:
+                raw_obs, rs, ds, infos = envs.step(java_valid_actions)
+                next_obs, next_mask, next_entity_count, next_unit_position, next_unit_mask = reshape_observation(
+                    torch.Tensor(raw_obs).to(device), device)
+            except Exception as e:
+                e.printStackTrace()
+                raise
+            rewards[step], next_done = torch.Tensor(rs).to(device), torch.Tensor(ds).to(device)
 
-        for i, info in enumerate(infos):
-            # When an episode ends there will be breakdown of reward by category of shape:
-            # {'WinLossRewardFunction': -1.0, 'ResourceGatherRewardFunction': 8.0, 'ProduceWorkerRewardFunction': 7.0,
-            # 'ProduceBuildingRewardFunction': 0.0, 'AttackRewardFunction': 3.0, 'ProduceCombatUnitRewardFunction': 0.0}
-            if 'episode' in info.keys():
-                print(f"global_step={global_step}, episode_reward={info['episode']['r']}")
-                writer.add_scalar("charts/episode_reward", info['episode']['r'], global_step)
-                for key in info['microrts_stats']:
-                    writer.add_scalar(f"charts/episode_reward/{key}", info['microrts_stats'][key], global_step)
-                # Add win-loss reward specific to ai opponent:
-                writer.add_scalar(f"charts/episode_reward/WinLossRewardFunction/{ai_opponent_names[i]}",
-                                  info['microrts_stats']['WinLossRewardFunction'], global_step)
-                break
-
+            for i, info in enumerate(infos):
+                # When an episode ends there will be breakdown of reward by category of shape:
+                # {'WinLossRewardFunction': -1.0, 'ResourceGatherRewardFunction': 8.0, 'ProduceWorkerRewardFunction': 7.0,
+                # 'ProduceBuildingRewardFunction': 0.0, 'AttackRewardFunction': 3.0, 'ProduceCombatUnitRewardFunction': 0.0}
+                if 'episode' in info.keys():
+                    print(f"global_step={global_step}, episode_reward={info['episode']['r']}")
+                    writer.add_scalar("charts/episode_reward", info['episode']['r'], global_step)
+                    for key in info['microrts_stats']:
+                        writer.add_scalar(f"charts/episode_reward/{key}", info['microrts_stats'][key], global_step)
+                    # Add win-loss reward specific to ai opponent:
+                    writer.add_scalar(f"charts/episode_reward/WinLossRewardFunction/{ai_opponent_names[i]}",
+                                      info['microrts_stats']['WinLossRewardFunction'], global_step)
+                    break
     # bootstrap reward if not done. reached the batch limit
     # print('Calculating Advantage...')
     with torch.no_grad():
         last_value = agent.get_value(next_obs.to(device),
                                      next_mask.to(device),
-                                     next_unit_count.to(device)).reshape(1, -1)
+                                     next_entity_count.to(device)).reshape(1, -1)
         if args.gae:
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
@@ -564,10 +579,12 @@ for update in range(starting_update, num_updates + 1):
 
     # flatten the batch
     b_obs = obs.reshape(obs.shape[0] * obs.shape[1], obs.shape[2], obs.shape[3])
-    b_obs_mask = obs_mask.reshape(obs_mask.shape[0] * obs_mask.shape[1], obs_mask.shape[2])
-    b_unit_counts = unit_counts.flatten()
+    b_obs_masks = obs_masks.reshape(obs_masks.shape[0] * obs_masks.shape[1], obs_masks.shape[2])
+    b_entity_counts = entity_counts.flatten()
     b_unit_positions = unit_positions.reshape(unit_positions.shape[0] * unit_positions.shape[1],
                                               unit_positions.shape[2])
+    b_unit_masks = unit_masks.reshape(unit_masks.shape[0] * unit_masks.shape[1], unit_masks.shape[2])
+
     b_logprobs = logprobs.reshape(-1)
     b_actions = actions.reshape((-1,) + action_space_shape)
     b_advantages = advantages.reshape(-1)
@@ -589,9 +606,10 @@ for update in range(starting_update, num_updates + 1):
             # raise
             _, newlogproba, entropy, _ = agent.get_action(
                 b_obs[minibatch_ind],
-                b_obs_mask[minibatch_ind],
-                b_unit_counts[minibatch_ind],
+                b_obs_masks[minibatch_ind],
+                b_entity_counts[minibatch_ind],
                 b_unit_positions[minibatch_ind],
+                b_unit_masks[minibatch_ind],
                 b_actions.long()[minibatch_ind],
                 b_invalid_action_masks[minibatch_ind],
                 envs)
@@ -608,8 +626,8 @@ for update in range(starting_update, num_updates + 1):
 
             # Value loss
             new_values = agent.get_value(b_obs[minibatch_ind],
-                                         b_obs_mask[minibatch_ind],
-                                         b_unit_counts[minibatch_ind]).view(-1)
+                                         b_obs_masks[minibatch_ind],
+                                         b_entity_counts[minibatch_ind]).view(-1)
             if args.clip_vloss:
                 v_loss_unclipped = ((new_values - b_returns[minibatch_ind]) ** 2)
                 v_clipped = b_values[minibatch_ind] + torch.clamp(new_values - b_values[minibatch_ind], -args.clip_coef,
