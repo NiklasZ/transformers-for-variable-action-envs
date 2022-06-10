@@ -11,18 +11,15 @@ from torch.utils.tensorboard import SummaryWriter
 import argparse
 from distutils.util import strtobool
 import numpy as np
-import gym
-import gym_microrts
-from gym.wrappers import TimeLimit, Monitor
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
-from gym.spaces import Discrete, Box, MultiBinary, MultiDiscrete, Space
+from gym.spaces import MultiDiscrete
 import time
 import random
 import os
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecVideoRecorder
 
-from transformer import Encoder
+from old.transformer import Encoder
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')

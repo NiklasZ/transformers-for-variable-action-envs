@@ -1,33 +1,24 @@
-# http://proceedings.mlr.press/v97/han19a/han19a.pdf
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 import tqdm
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
 import argparse
 from distutils.util import strtobool
 import numpy as np
-import gym
-import gym_microrts
-from gym.wrappers import TimeLimit, Monitor
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
-from gym.spaces import Discrete, Box, MultiBinary, MultiDiscrete, Space
+from gym.spaces import MultiDiscrete
 import time
 import random
 import os
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecVideoRecorder
-
 from helpers import reshape_observation
-from transformer import Encoder
 
-# TODO on resume I should also set the seed.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')
+
     # Common arguments
     parser.add_argument('--exp-name', type=str, default=os.path.basename(__file__).rstrip(".py"),
                         help='the name of this experiment')
@@ -91,6 +82,8 @@ if __name__ == "__main__":
                         help="Toggle learning rate annealing for policy and value networks")
     parser.add_argument('--clip-vloss', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='Toggles wheter or not to use a clipped loss for the value function, as per the paper.')
+    parser.add_argument('--sparse-rewards', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
+                        help='Toggle to enable whether sparse rewards should be used instead of shaped ones.')
 
     args = parser.parse_args()
     if not args.seed:
@@ -198,6 +191,13 @@ else:
                    [microrts_ai.workerRushAI for _ in range(2)]
 ai_opponent_names = [ai.__name__ for ai in ai_opponents]
 
+if args.sparse_rewards:
+    # Only rewards win/lose
+    reward_weight = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+else:
+    # Rewards other actions like making units and killing others.
+    reward_weight = np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
+
 envs = MicroRTSGridModeVecEnv(
     num_selfplay_envs=args.num_selfplay_envs,
     num_bot_envs=args.num_bot_envs,
@@ -205,7 +205,7 @@ envs = MicroRTSGridModeVecEnv(
     render_theme=2,
     ai2s=ai_opponents,
     map_path="maps/8x8/basesWorkers8x8.xml",
-    reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
+    reward_weight=np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 )
 envs = MicroRTSStatsRecorder(envs, args.gamma)
 envs = VecMonitor(envs)
@@ -275,8 +275,6 @@ class Critic(nn.Module):
     # observation_mask: [batch_dim, V]
     # (V is the max number of units across all envs).
     # output: [num_envs]
-    # TODO study effects of summation vs. averaging vs. weighting both
-    # TODO study effects of using only player vs all outputs.
     def forward(self, x, observation_mask):
         x_reshaped = x.permute((1, 0, 2))  # [V, N, embed_size] -> [N, V, embed_size]
         value_preds = torch.squeeze(self.decoder(x_reshaped))
@@ -374,7 +372,6 @@ class Agent(nn.Module):
         trimmed_unit_mask = player_unit_mask[:, :max_units_in_batch]
         logits = self.actor(self.forward(trimmed_x, trimmed_obs_mask),
                             player_unit_position, trimmed_unit_mask)
-        # TODO: I need to fix the masking of invalid training actions "WARNING: TrainDirection invalid direction"
         # OLD CODE - DO NOT CHANGE
         grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
         split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
@@ -510,7 +507,6 @@ for update in range(starting_update, num_updates + 1):
         # lot of invalid actions at cells for which no source units exist, so the rest of
         # the code removes these invalid actions to speed things up
         real_action = real_action.cpu().numpy()
-        # TODO this line could be a hint on how to simplify the initial for loop.
         valid_actions = real_action[invalid_action_masks[step][:, :, 0].bool().cpu().numpy()]
         valid_actions_counts = invalid_action_masks[step][:, :, 0].sum(1).long().cpu().numpy()
         java_valid_actions = []
@@ -594,7 +590,7 @@ for update in range(starting_update, num_updates + 1):
 
     # Optimising the policy and value network
     inds = np.arange(args.batch_size, )
-    print('Running PPO...')
+    print('Running PPO...\n')
     for i_epoch_pi in tqdm.tqdm(range(args.update_epochs)):
         np.random.shuffle(inds)
         for start in range(0, args.batch_size, args.minibatch_size):

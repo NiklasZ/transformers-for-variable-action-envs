@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-
+# Older manual implementation of transformer layer + encoder. Adapted from:
+# https://github.com/aladdinpersson/Machine-Learning-Collection/blob/master/ML/Pytorch/more_advanced/transformer_from_scratch/transformer_from_scratch.py
 
 class SelfAttention(nn.Module):
     def __init__(self, embed_size, heads):
