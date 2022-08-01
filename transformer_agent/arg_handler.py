@@ -96,6 +96,10 @@ def get_run_args():
     parser_new.add_argument('--input-padding', type=int, default=0,
                             help='how much to pad inputs to the transformer encoder by (can use this to balance out '
                                  'heads)')
+    parser_new.add_argument('--embed-size', type=int, default=64,
+                            help='when using embeddings, determines '
+                                 'how large an embedding generated from an observation feature should be.')
+
 
     args = parser.parse_args()
 

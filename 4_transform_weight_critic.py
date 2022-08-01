@@ -9,8 +9,7 @@ import numpy as np
 import time
 import random
 import os
-from helpers import reshape_observation, reshape_observation_extended, MessageFilter
-from transformer_agent.agent import Agent, WeightedAgent
+from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
 from transformer_agent.arg_handler import get_run_args
 from transformer_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt

@@ -3,118 +3,56 @@ from typing import Tuple
 import numpy as np
 import torch
 from torch import nn
-from torch.distributions import Categorical
+
+from transformer_agent.agent import Actor, CategoricalMasked
+from transformer_agent.weighted_agent import WeightedAgent, WeightedCritic
 from torch.nn import functional as F
 
 
-class CategoricalMasked(Categorical):
-    def __init__(self, device, probs=None, logits=None, validate_args=None, masks=[], sw=None):
+# class MinifiedWeightedAgent(WeightedAgent):
+#     def __init__(self, map_height, map_width, envs, device, num_layers=5, dim_feedforward=512, num_heads=5, padding=2):
+#         super(MinifiedWeightedAgent, self).__init__(map_height * map_width, envs, device, num_layers, dim_feedforward,
+#                                                     num_heads, padding)
+#         self.input_size = (map_height + map_width + 5 + 5 + 3 + 8 + 6) # 43 on an 8x8 map. 43 is a prime number though.
+#         self.padded_size = self.padding + self.input_size # So we add 2 which gives us 45.
+#         encoder_layer = nn.TransformerEncoderLayer(d_model=self.padded_size,
+#                                                    nhead=self.num_heads,
+#                                                    dim_feedforward=dim_feedforward)
+#         self.network = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+#         self.actor = Actor(self.padded_size, self.map_size, envs, device)
+#         self.critic = WeightedCritic(device, self.padded_size, envs)
+
+class MinifiedWeightedAgent(nn.Module):
+    def __init__(self, map_height, map_width, envs, device, num_layers=5, dim_feedforward=512, num_heads=5, padding=2):
+        super(MinifiedWeightedAgent, self).__init__()
         self.device = device
-        self.masks = masks
-        if len(self.masks) == 0:
-            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
-        else:
-            self.masks = masks.bool()
-            logits = torch.where(self.masks, logits, torch.tensor(-1e+8, device=device))
-            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
-
-    def entropy(self):
-        if len(self.masks) == 0:
-            return super(CategoricalMasked, self).entropy()
-        p_log_p = self.logits * self.probs
-        p_log_p = torch.where(self.masks, p_log_p, torch.tensor(0.).to(self.device))
-        return -p_log_p.sum(-1)
-
-
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-
-class Critic(nn.Module):
-    def __init__(self, embed_size, map_size, envs):
-        super(Critic, self).__init__()
-        self.embed_size = embed_size
-        self.map_size = map_size
-        self.unit_action_space = envs.action_space.nvec[1:].sum()
-        self.decoder = layer_init(nn.Linear(self.embed_size, 1), std=1)
-
-    # x: network's output: [seqlength(V), batch_dim, embed_size]
-    # entity_mask: [batch_dim, V]
-    # (V is the max number of units across all envs).
-    # output: [num_envs]
-    def forward(self, x, entity_mask):
-        x_reshaped = x.permute((1, 0, 2))  # [V, N, embed_size] -> [N, V, embed_size]
-        value_preds = torch.squeeze(self.decoder(x_reshaped))
-        out = torch.sum(value_preds.masked_fill(entity_mask, 0), axis=1)
-        return out
-
-
-class Actor(nn.Module):
-    def __init__(self, embed_size, map_size, envs, device):
-        super(Actor, self).__init__()
-        self.device = device
-        self.embed_size = embed_size
-        self.map_size = map_size
-        self.unit_action_space = envs.action_space.nvec[1:].sum()
-        self.decoder = layer_init(nn.Linear(embed_size, self.unit_action_space), std=0.01)
-
-    # x: network's output: [V, num_envs, embed_size]
-    # (V is the max number of units across all envs).
-    # player_unit_positions: [batch_dim, height * width]
-    # player_unit_mask: [batch_dim, V]
-    # output: [num_envs, env_height * env_width * unit_action_params]
-    def forward(self, x, player_unit_positions, player_unit_mask):
-        x_reshaped = x.permute((1, 0, 2))  # [V, N, embed_size] -> [N, V, embed_size]
-        N = x_reshaped.shape[0]
-        out = torch.zeros(N, self.map_size, self.unit_action_space).to(self.device)
-        max_player_units = torch.max((player_unit_mask == False).count_nonzero(axis=1))
-        trimmed_unit_mask = player_unit_mask[:, :max_player_units]
-        unit_action_x, unit_action_y = (trimmed_unit_mask == False).nonzero(as_tuple=True)
-        action_preds = self.decoder(x_reshaped[:, :max_player_units, :])
-        unit_pos_x, unit_pos_y = player_unit_positions.nonzero(as_tuple=True)
-        # We use masks to find the coordinates of units in the output grid
-        # And then assign the corresponding action
-        out[unit_pos_x, unit_pos_y, :] = action_preds[unit_action_x, unit_action_y, :]
-
-        y = out.view(N, self.map_size * self.unit_action_space)
-        return y
-
-
-class Agent(nn.Module):
-    def __init__(self, map_size, envs, device, num_layers=5, dim_feedforward=512, num_heads=7, padding=0):
-        super(Agent, self).__init__()
-        self.device = device
-        self.map_size = map_size  # E.g 8*8
+        self.map_size = map_height * map_width  # E.g 8*8
         # For our case 8,8,27
         # The first part of the input contains the location of the unit on the map
         # The rest are one-hot encodings of the observation features:
         # hit points, resources, owner, unit types, current action
         # On an 8 x 8 map this is 91
-        # TODO by fixing this embed size we are limiting model parameter size.
-        # TODO I should consider a compacter format that generates an embedding.
-        self.input_size = (map_size + 5 + 5 + 3 + 8 + 6)
+        self.input_size = (map_height + map_width + 5 + 5 + 3 + 8 + 6)  # 43 on an 8x8 map. 43 is a prime number though.
         # How much to pad an input with so the size works for the number of attention heads.
         self.padding = padding
         # Number of neurons in the feedforward layer in a transformer block.
         self.dim_feedforward = dim_feedforward
         # Number of encoding layers
         self.num_layers = num_layers
-        # Needs to be picked so the input_size is divisible by it. E.g 91/7 = 13
+        # Needs to be picked so the input_size is divisible by it.
         self.num_heads = num_heads
         if (self.input_size + self.padding) % num_heads != 0:
             raise Exception(
                 f'The input size of {self.input_size} + padding {self.padding} are not divisible by {self.num_heads}')
-        self.padded_size = self.input_size + self.padding
+        self.padded_size = self.padding + self.input_size # So we add 2 which gives us 45.
         # Ignore dropout for now
         self.dropout = 0
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.padded_size,
                                                    nhead=self.num_heads,
                                                    dim_feedforward=dim_feedforward)
         self.network = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-        self.actor = Actor(self.padded_size, map_size, envs, device)
-        self.critic = Critic(self.padded_size, map_size, envs)
+        self.actor = Actor(self.padded_size, self.map_size, envs, device)
+        self.critic = WeightedCritic(self.device, self.padded_size, envs)
 
     # TODO Type this stuff
     def forward(self, x_reshaped, bool_mask):
@@ -165,20 +103,23 @@ class Agent(nn.Module):
         invalid_action_masks = invalid_action_masks.view(-1, self.map_size, envs.action_space.nvec[1:].sum() + 1)
         return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
 
-    def get_value(self, x, entity_mask, entity_count):
-        # x_reshaped, bool_mask, _, player_unit_counts = self.reshape_for_transformer(x)
+    def get_value(self, x, entity_mask, entity_count, player_unit_mask, enemy_unit_mask, neutral_unit_mask):
         max_units_in_batch = torch.max(entity_count)
         trimmed_x = x[:, :max_units_in_batch, :]
         trimmed_mask = entity_mask[:, :max_units_in_batch]
-        return self.critic(self.forward(trimmed_x, trimmed_mask), trimmed_mask)
+        trimmed_player = player_unit_mask[:, :max_units_in_batch]
+        trimmed_enemy = enemy_unit_mask[:, :max_units_in_batch]
+        trimmed_neutral = neutral_unit_mask[:, :max_units_in_batch]
+
+        return self.critic(self.forward(trimmed_x, trimmed_mask), trimmed_player, trimmed_enemy, trimmed_neutral)
 
     def network_size(self):
         print(f'Main NN params: {sum([p.numel() for p in self.network.parameters()])}')
         print(f'Trainable params: {sum([p.numel() for p in self.network.parameters() if p.requires_grad])}')
 
 
-def reshape_observation(x: torch.Tensor, device: str) -> Tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def reshape_observation_minified(x: torch.Tensor, device: str) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Converts original Micro-RTS observation into datastructures necessary to the transformer.
     :param x: [batch_dim,height,width,observation_state]
@@ -189,28 +130,39 @@ def reshape_observation(x: torch.Tensor, device: str) -> Tuple[
     all entity counts (players and resource) [batch_dim]
     player unit positions bitmap [batch_dim, height * width]
     player unit mask [batch_dim, height * width]
+    enemy unit mask [batch_dim, height * width]
+    neutral unit mask [batch_dim, height * width]
     """
     # indices in observation where unit and resource positions are encoded.
     player_1, player_2, resource = 11, 12, 14
     N, H, W, C = x.shape
     out = x.view(N, H * W, C)
-    x_reshaped = torch.zeros(N, H * W, H * W + C).to(device)
+    x_reshaped = torch.zeros(N, H * W, H + W + C).to(device)
     entity_mask = torch.ones(N, H * W, dtype=torch.bool).to(device)
     player_unit_mask = torch.ones(N, H * W, dtype=torch.bool).to(device)
-    entity_pos = [torch.cat((o[:, player_1].nonzero(),
-                             o[:, player_2].nonzero(),
-                             o[:, resource].nonzero())) for o in out]
+    enemy_unit_mask = torch.ones(N, H * W, dtype=torch.bool).to(device)
+    neutral_unit_mask = torch.ones(N, H * W, dtype=torch.bool).to(device)
+    entity_pos = [torch.cat((i[:, :, player_1].nonzero(),
+                             i[:, :, player_2].nonzero(),
+                             i[:, :, resource].nonzero())) for i in x]
     entity_unit_counts = (out[:, :, player_1].count_nonzero(axis=1) +
                           out[:, :, player_2].count_nonzero(axis=1) +
                           out[:, :, resource].count_nonzero(axis=1)).to(device)
     player_unit_counts = out[:, :, player_1].count_nonzero(axis=1)
+    enemy_unit_indices = player_unit_counts + out[:, :, player_2].count_nonzero(axis=1)
+    neutral_unit_indices = enemy_unit_indices + out[:, :, resource].count_nonzero(axis=1)
 
     for i in range(N):
         num_entities = entity_pos[i].shape[0]
-        x_reshaped[i, :num_entities, :H * W] = F.one_hot(entity_pos[i][:, 0], H * W)
-        x_reshaped[i, :num_entities, H * W:] = out[i, entity_pos[i][:, 0]]
+        # Assign one-hot version of (h,w) positions to output. Should 2H or 2W in length, where we assume H==W for now.
+        x_reshaped[i, :num_entities, :H + W] = F.one_hot(entity_pos[i], H).flatten(start_dim=-2)
+        # Assign features of each unit, selecting by position.
+        x_reshaped[i, :num_entities, H + W:] = x[0, entity_pos[i][:, 0], entity_pos[i][:, 1]]
         entity_mask[i, :num_entities] = False
         player_unit_mask[i, :player_unit_counts[i]] = False
+        enemy_unit_mask[i, player_unit_counts[i]:enemy_unit_indices[i]] = False
+        neutral_unit_mask[i, enemy_unit_indices[i]:neutral_unit_indices[i]] = False
 
     player_unit_positions = out[:, :, player_1].to(device)
-    return x_reshaped, entity_mask, entity_unit_counts, player_unit_positions, player_unit_mask
+    return x_reshaped, entity_mask, entity_unit_counts, player_unit_positions, \
+           player_unit_mask, enemy_unit_mask, neutral_unit_mask

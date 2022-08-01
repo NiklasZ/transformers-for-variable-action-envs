@@ -78,7 +78,7 @@ def create_envs(args: dict) -> Tuple[Union[VecMonitor, VecVideoRecorder], List[s
                        [microrts_ai.workerRushAI for _ in range(2)]
     ai_opponent_names = [ai.__name__ for ai in ai_opponents]
 
-    # Weight order is affects:
+    # Weight order is as follows:
     # WinLossRewardFunction(),
     # ResourceGatherRewardFunction(),
     # ProduceWorkerRewardFunction(),
@@ -96,6 +96,7 @@ def create_envs(args: dict) -> Tuple[Union[VecMonitor, VecVideoRecorder], List[s
         # Rewards other actions like making units and killing others.
         reward_weight = np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 
+    # TODO: add 24x24/basesWorkers24x24.xml or 32x32 variant
     if args['map_size'] == 8:
         map_path = "maps/8x8/basesWorkers8x8.xml"
     elif args['map_size'] == 16:

@@ -7,8 +7,7 @@ import numpy as np
 import time
 import random
 import os
-from helpers import reshape_observation
-from transformer_agent.agent import Agent
+from transformer_agent.agent import Agent, reshape_observation
 from transformer_agent.arg_handler import get_run_args
 import wandb
 from transformer_agent.micro_rts_env import create_envs

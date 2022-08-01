@@ -24,8 +24,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import glob
 
-from helpers import reshape_observation_extended, reshape_observation
-from transformer_agent.agent import Agent, WeightedAgent
+from transformer_agent.agent import Agent, reshape_observation
+from transformer_agent.embedded_agent import EmbeddedAgent
+from transformer_agent.mixed_embedded_agent import MixedEmbeddedAgent, reshape_observation_mixed_embedded
+from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')
@@ -69,6 +71,9 @@ if __name__ == "__main__":
                         help='the number of layers to use in the transformer encoder')
     parser.add_argument('--feed-forward-neurons', type=int, default=512,
                         help='the number of feed-forward neurons in a transformer layer')
+    parser.add_argument('--embed-size', type=int, default=64,
+                        help='when using embeddings, determines '
+                             'how large an embedding generated from an observation feature should be.')
 
     args = parser.parse_args()
     if not args.seed:
@@ -151,6 +156,7 @@ random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 torch.backends.cudnn.deterministic = args.torch_deterministic
+
 all_ais = {
     "randomBiasedAI": microrts_ai.randomBiasedAI,
     "randomAI": microrts_ai.randomAI,
@@ -170,10 +176,7 @@ ai_names, ais = list(all_ais.keys()), list(all_ais.values())
 ai_match_stats = dict(zip(ai_names, np.zeros((len(ais), 3))))
 args.num_envs = len(ais)
 ai_envs = []
-# gridnet_exps = ["ppo_gridnet_diverse_impala", "ppo_gridnet_coacai", "ppo_gridnet_naive", "ppo_gridnet_diverse",
-#                 "ppo_gridnet_diverse_encode_decode", "ppo_gridnet_coacai_naive", "ppo_gridnet_coacai_partial_mask",
-#                 "ppo_gridnet_coacai_no_mask", "ppo_gridnet_selfplay_encode_decode",
-#                 "ppo_gridnet_selfplay_diverse_encode_decode"]
+
 for i in range(len(ais)):
     # if args.exp_name in gridnet_exps:
     envs = MicroRTSGridModeVecEnv(
@@ -182,792 +185,19 @@ for i in range(len(ais)):
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=[ais[i]],
-        # map_path="maps/16x16/basesWorkers16x16A.xml",
-        map_path="maps/8x8/basesWorkers8x8.xml",
+        map_path="maps/16x16/basesWorkers16x16.xml",
+        #map_path="maps/8x8/basesWorkers8x8.xml",
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
     envs = MicroRTSStatsRecorder(envs)
     envs = VecMonitor(envs)
-    envs = VecVideoRecorder(envs, f'videos/{experiment_name}/{ai_names[i]}',
-                            record_video_trigger=lambda x: x % 4000 == 0, video_length=2000)
-    # else:
-    #     envs = MicroRTSVecEnv(
-    #         num_envs=1,
-    #         max_steps=args.max_steps,
-    #         render_theme=2,
-    #         ai2s=[ais[i]],
-    #         map_path="maps/16x16/basesWorkers16x16.xml",
-    #         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
-    #     )
-    #     envs = MicroRTSStatsRecorder(envs)
-    #     envs = VecMonitor(envs)
-    #     envs = VecVideoRecorder(envs, f'videos/{experiment_name}/{ai_names[i]}',
-    #                             record_video_trigger=lambda x: x % 4000 == 0, video_length=2000)
+    # envs = VecVideoRecorder(envs, f'videos/{experiment_name}/{ai_names[i]}',
+    #                         record_video_trigger=lambda x: x % 4000 == 0, video_length=2000)
     ai_envs += [envs]
 assert isinstance(envs.action_space, MultiDiscrete), "only MultiDiscrete action space is supported"
-#
-#
-# # ALGO LOGIC: initialize agent here:
-# class CategoricalMasked(Categorical):
-#     def __init__(self, probs=None, logits=None, validate_args=None, masks=[]):
-#         self.masks = masks
-#         if len(self.masks) == 0:
-#             super(CategoricalMasked, self).__init__(probs, logits, validate_args)
-#         else:
-#             self.masks = masks.type(torch.BoolTensor).to(device)
-#             logits = torch.where(self.masks, logits, torch.tensor(-1e+8).to(device))
-#             super(CategoricalMasked, self).__init__(probs, logits, validate_args)
-#
-#     def entropy(self):
-#         if len(self.masks) == 0:
-#             return super(CategoricalMasked, self).entropy()
-#         p_log_p = self.logits * self.probs
-#         p_log_p = torch.where(self.masks, p_log_p, torch.tensor(0.).to(device))
-#         return -p_log_p.sum(-1)
-#
-#
-# class Scale(nn.Module):
-#     def __init__(self, scale):
-#         super().__init__()
-#         self.scale = scale
-#
-#     def forward(self, x):
-#         return x * self.scale
-#
-#
-# class Transpose(nn.Module):
-#     def __init__(self, permutation):
-#         super().__init__()
-#         self.permutation = permutation
-#
-#     def forward(self, x):
-#         return x.permute(self.permutation)
-#
-#
-# def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-#     torch.nn.init.orthogonal_(layer.weight, std)
-#     torch.nn.init.constant_(layer.bias, bias_const)
-#     return layer
-#
-#
-# class ResidualBlock(nn.Module):
-#     def __init__(self, channels):
-#         super().__init__()
-#         self.conv0 = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1)
-#         self.conv1 = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1)
-#
-#     def forward(self, x):
-#         inputs = x
-#         x = nn.functional.relu(x)
-#         x = self.conv0(x)
-#         x = nn.functional.relu(x)
-#         x = self.conv1(x)
-#         return x + inputs
-#
-#
-# class ConvSequence(nn.Module):
-#     def __init__(self, input_shape, out_channels):
-#         super().__init__()
-#         self._input_shape = input_shape
-#         self._out_channels = out_channels
-#         self.conv = nn.Conv2d(in_channels=self._input_shape[0], out_channels=self._out_channels, kernel_size=3,
-#                               padding=1)
-#         self.res_block0 = ResidualBlock(self._out_channels)
-#         self.res_block1 = ResidualBlock(self._out_channels)
-#
-#     def forward(self, x):
-#         x = self.conv(x)
-#         x = nn.functional.max_pool2d(x, kernel_size=3, stride=2, padding=1)
-#         x = self.res_block0(x)
-#         x = self.res_block1(x)
-#         assert x.shape[1:] == self.get_output_shape()
-#         return x
-#
-#     def get_output_shape(self):
-#         _c, h, w = self._input_shape
-#         return (self._out_channels, (h + 1) // 2, (w + 1) // 2)
-#
-#
-# if args.exp_name == "ppo_gridnet_diverse_impala":
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             h, w, c = envs.observation_space.shape
-#             shape = (c, h, w)
-#             conv_seqs = []
-#             for out_channels in [16, 32, 32]:
-#                 conv_seq = ConvSequence(shape, out_channels)
-#                 shape = conv_seq.get_output_shape()
-#                 conv_seqs.append(conv_seq)
-#             conv_seqs += [
-#                 nn.Flatten(),
-#                 nn.ReLU(),
-#                 nn.Linear(in_features=shape[0] * shape[1] * shape[2], out_features=256),
-#                 nn.ReLU(),
-#             ]
-#             self.network = nn.Sequential(*conv_seqs)
-#             self.actor = layer_init(nn.Linear(256, self.mapsize * envs.action_space.nvec[1:].sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_diverse_impala":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             h, w, c = envs.observation_space.shape
-#             shape = (c, h, w)
-#             conv_seqs = []
-#             for out_channels in [16, 32, 32]:
-#                 conv_seq = ConvSequence(shape, out_channels)
-#                 shape = conv_seq.get_output_shape()
-#                 conv_seqs.append(conv_seq)
-#             conv_seqs += [
-#                 nn.Flatten(),
-#                 nn.ReLU(),
-#                 nn.Linear(in_features=shape[0] * shape[1] * shape[2], out_features=256),
-#                 nn.ReLU(),
-#             ]
-#             self.network = nn.Sequential(*conv_seqs)
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_coacai":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_coacai_no_mask":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#
-#                 # this removes the unit action mask
-#                 source_unit_action_mask[:] = 1
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_gridnet_naive":
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, self.mapsize * envs.action_space.nvec[1:].sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [Categorical(logits=logits) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name in ["ppo_gridnet_diverse", "ppo_gridnet_coacai", "ppo_gridnet_coacai_naive"]:
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, self.mapsize * envs.action_space.nvec[1:].sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_diverse":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name in ["ppo_gridnet_diverse_encode_decode", "ppo_gridnet_selfplay_diverse_encode_decode",
-#                        "ppo_gridnet_selfplay_encode_decode"]:
-#     class Transpose(nn.Module):
-#         def __init__(self, permutation):
-#             super().__init__()
-#             self.permutation = permutation
-#
-#         def forward(self, x):
-#             return x.permute(self.permutation)
-#
-#
-#     class Encoder(nn.Module):
-#         def __init__(self, input_channels):
-#             super().__init__()
-#             self._encoder = nn.Sequential(
-#                 Transpose((0, 3, 1, 2)),
-#                 layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
-#                 nn.MaxPool2d(3, stride=2, padding=1),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(32, 64, kernel_size=3, padding=1)),
-#                 nn.MaxPool2d(3, stride=2, padding=1),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(64, 128, kernel_size=3, padding=1)),
-#                 nn.MaxPool2d(3, stride=2, padding=1),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
-#                 nn.MaxPool2d(3, stride=2, padding=1),
-#             )
-#
-#         def forward(self, x):
-#             return self._encoder(x)
-#
-#
-#     class Decoder(nn.Module):
-#         def __init__(self, output_channels):
-#             super().__init__()
-#
-#             self.deconv = nn.Sequential(
-#                 layer_init(nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1)),
-#                 nn.ReLU(),
-#                 layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
-#                 nn.ReLU(),
-#                 layer_init(nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1)),
-#                 nn.ReLU(),
-#                 layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
-#                 Transpose((0, 2, 3, 1)),
-#             )
-#
-#         def forward(self, x):
-#             return self.deconv(x)
-#
-#
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             h, w, c = envs.observation_space.shape
-#
-#             self.encoder = Encoder(c)
-#
-#             self.actor = Decoder(78)
-#
-#             self.critic = nn.Sequential(
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(256, 128), std=1),
-#                 nn.ReLU(),
-#                 layer_init(nn.Linear(128, 1), std=1),
-#             )
-#
-#         def forward(self, x):
-#             return self.encoder(x)  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.reshape(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(),
-#                                                          dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(),
-#                                                          dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-#
-# elif args.exp_name == "ppo_coacai_naive":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#
-#                 # remove the mask on action parameters, which is a similar setup to pysc2
-#                 source_unit_action_mask[:, 6:] = 1
-#
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_coacai_partial_mask":
-#     class Agent(nn.Module):
-#         def __init__(self, frames=4):
-#             super(Agent, self).__init__()
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, envs.action_space.nvec.sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             split_logits = torch.split(logits, envs.action_space.nvec.tolist(), dim=1)
-#
-#             if action is None:
-#                 # 1. select source unit based on source unit mask
-#                 source_unit_mask = torch.Tensor(np.array(envs.vec_client.getUnitLocationMasks()).reshape(1, -1))
-#                 multi_categoricals = [CategoricalMasked(logits=split_logits[0], masks=source_unit_mask)]
-#                 action_components = [multi_categoricals[0].sample()]
-#                 # 2. select action type and parameter section based on the
-#                 #    source-unit mask of action type and parameters
-#                 # print(np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 source_unit_action_mask = torch.Tensor(
-#                     np.array(envs.vec_client.getUnitActionMasks(action_components[0].cpu().numpy())).reshape(1, -1))
-#                 split_suam = torch.split(source_unit_action_mask, envs.action_space.nvec.tolist()[1:], dim=1)
-#                 multi_categoricals = multi_categoricals + [CategoricalMasked(logits=logits, masks=iam) for (logits, iam)
-#                                                            in zip(split_logits[1:], split_suam)]
-#                 invalid_action_masks = torch.cat((source_unit_mask, source_unit_action_mask), 1)
-#                 action_components += [categorical.sample() for categorical in multi_categoricals[1:]]
-#                 action = torch.stack(action_components)
-#             else:
-#                 split_invalid_action_masks = torch.split(invalid_action_masks, envs.action_space.nvec.tolist(), dim=1)
-#                 multi_categoricals = [Categorical(logits=logits) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             return action, logprob.sum(0), entropy.sum(0), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_gridnet_coacai_partial_mask":
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, self.mapsize * envs.action_space.nvec[1:].sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#
-#                 # remove the mask on action parameters, which is a similar setup to pysc2
-#                 invalid_action_masks[:, 6:] = 1
-#
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# elif args.exp_name == "ppo_gridnet_coacai_no_mask":
-#     class Agent(nn.Module):
-#         def __init__(self, mapsize=16 * 16):
-#             super(Agent, self).__init__()
-#             self.mapsize = mapsize
-#             self.network = nn.Sequential(
-#                 layer_init(nn.Conv2d(27, 16, kernel_size=3, stride=2)),
-#                 nn.ReLU(),
-#                 layer_init(nn.Conv2d(16, 32, kernel_size=2)),
-#                 nn.ReLU(),
-#                 nn.Flatten(),
-#                 layer_init(nn.Linear(32 * 6 * 6, 256)),
-#                 nn.ReLU(), )
-#             self.actor = layer_init(nn.Linear(256, self.mapsize * envs.action_space.nvec[1:].sum()), std=0.01)
-#             self.critic = layer_init(nn.Linear(256, 1), std=1)
-#
-#         def forward(self, x):
-#             return self.network(x.permute((0, 3, 1, 2)))  # "bhwc" -> "bchw"
-#
-#         def get_action(self, x, action=None, invalid_action_masks=None, envs=None):
-#             logits = self.actor(self.forward(x))
-#             grid_logits = logits.view(-1, envs.action_space.nvec[1:].sum())
-#             split_logits = torch.split(grid_logits, envs.action_space.nvec[1:].tolist(), dim=1)
-#
-#             if action is None:
-#                 invalid_action_masks = torch.tensor(np.array(envs.vec_client.getMasks(0))).to(device)
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 real_invalid_action_masks = invalid_action_masks.clone()
-#
-#                 # remove masks
-#                 invalid_action_masks[:] = 1
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#                 action = torch.stack([categorical.sample() for categorical in multi_categoricals])
-#             else:
-#                 invalid_action_masks = invalid_action_masks.view(-1, invalid_action_masks.shape[-1])
-#                 real_invalid_action_masks = invalid_action_masks.clone()
-#
-#                 # remove masks
-#                 invalid_action_masks[:] = 1
-#                 action = action.view(-1, action.shape[-1]).T
-#                 split_invalid_action_masks = torch.split(invalid_action_masks[:, 1:],
-#                                                          envs.action_space.nvec[1:].tolist(), dim=1)
-#                 multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in
-#                                       zip(split_logits, split_invalid_action_masks)]
-#             logprob = torch.stack([categorical.log_prob(a) for a, categorical in zip(action, multi_categoricals)])
-#             entropy = torch.stack([categorical.entropy() for categorical in multi_categoricals])
-#             num_predicted_parameters = len(envs.action_space.nvec) - 1
-#             logprob = logprob.T.view(-1, 256, num_predicted_parameters)
-#             entropy = entropy.T.view(-1, 256, num_predicted_parameters)
-#             action = action.T.view(-1, 256, num_predicted_parameters)
-#             invalid_action_masks = invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             real_invalid_action_masks = real_invalid_action_masks.view(-1, 256, envs.action_space.nvec[1:].sum() + 1)
-#             return action, logprob.sum(1).sum(1), entropy.sum(1).sum(1), invalid_action_masks
-#
-#         def get_value(self, x):
-#             return self.critic(self.forward(x))
-# else:
-#     raise Exception("incorrect agent selected")
-mapsize = 8 * 8
-agent = WeightedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons).to(device)
+
+mapsize = 16 * 16
+agent = MixedEmbeddedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons).to(device)
 # agent = Agent(mapsize, envs, device).to(device)
 agent.load_state_dict(torch.load(args.agent_model_path, map_location=device))
 agent.eval()
@@ -992,14 +222,19 @@ invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + invalid_act
 # TRY NOT TO MODIFY: start the game
 global_step = 0
 start_time = time.time()
+entity_counts = mapsize*[0]
 
 for envs_idx, envs in enumerate(ai_envs):
     next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-        reshape_observation_extended(torch.Tensor(envs.reset()).to(device), device)
+        reshape_observation_mixed_embedded(torch.Tensor(envs.reset()).to(device), device)
     # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = \
     #     reshape_observation(torch.Tensor(envs.reset()).to(device), device)
     next_done = torch.zeros(args.num_envs).to(device)
     game_count = 0
+    entity_counts[next_entity_count.cpu().numpy()[0]] += 1
+    print('entity counts:')
+    print(entity_counts)
+
     from jpype.types import JArray, JInt
 
     # This is a hack we use to stop the JVM from quitting inbetween runs
@@ -1007,7 +242,7 @@ for envs_idx, envs in enumerate(ai_envs):
     #     ai_envs[-1].close()
 
     while True:
-        # envs.render()
+        #envs.render()
         # ALGO LOGIC: put action logic here
         with torch.no_grad():
             action, logproba, _, invalid_action_mask = agent.get_action(next_obs,
@@ -1044,7 +279,8 @@ for envs_idx, envs in enumerate(ai_envs):
         try:
             raw_obs, rs, ds, infos = envs.step(java_valid_actions)
             next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-                reshape_observation_extended(torch.Tensor(raw_obs).to(device), device)
+                reshape_observation_mixed_embedded(torch.Tensor(raw_obs).to(device), device)
+            entity_counts[next_entity_count.cpu().numpy()[0]] += 1
             # raw_obs, rs, ds, infos = envs.step(java_valid_actions)
             # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = reshape_observation(
             #     torch.Tensor(raw_obs).to(device), device)
@@ -1089,9 +325,11 @@ print(ai_match_stats)
 n_rows, n_cols = 3, 5
 fig = plt.figure(figsize=(5 * 3, 4 * 3))
 for i, var_name in enumerate(ai_names):
+    stats = ai_match_stats[var_name]
     ax = fig.add_subplot(n_rows, n_cols, i + 1)
-    ax.bar(["loss", "tie", "win"], ai_match_stats[var_name])
+    ax.bar(["loss", "tie", "win"], stats)
     ax.set_title(var_name)
+    ax.set_ylim([0, sum(stats)])
 fig.suptitle(args.agent_model_path)
 fig.tight_layout()
 cumulative_match_results = np.array(list(ai_match_stats.values())).sum(0)

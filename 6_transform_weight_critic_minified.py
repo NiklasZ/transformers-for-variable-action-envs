@@ -9,8 +9,8 @@ import numpy as np
 import time
 import random
 import os
-from helpers import reshape_observation, reshape_observation_extended, MessageFilter
-from transformer_agent.agent import Agent, WeightedAgent, EmbeddedAgent
+from transformer_agent.minified_agent import MinifiedWeightedAgent, reshape_observation_minified
+from transformer_agent.weighted_agent import WeightedAgent
 from transformer_agent.arg_handler import get_run_args
 from transformer_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
@@ -70,10 +70,12 @@ torch.backends.cudnn.deterministic = args.torch_deterministic
 
 envs, ai_opponent_names = create_envs(vars(args))
 
-mapsize = 8 * 8
+mapsize = args.map_size ** 2
 # Used for transformers
-observation_size = (mapsize + 5 + 5 + 3 + 8 + 6)
-agent = EmbeddedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons, args.embed_factor).to(device)
+observation_size = (args.map_size * 2 + 5 + 5 + 3 + 8 + 6)
+agent = MinifiedWeightedAgent(args.map_size, args.map_size, envs, device, args.transformer_layers,
+                              args.feed_forward_neurons,
+                              args.attention_heads, args.input_padding).to(device)
 agent.network_size()
 optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 if args.anneal_lr:
@@ -110,7 +112,7 @@ start_time = time.time()
 # Note how `next_obs` and `next_done` are used; their usage is equivalent to
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/84a7582477fb0d5c82ad6d850fe476829dddd2e1/a2c_ppo_acktr/storage.py#L60
 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-    reshape_observation_extended(torch.Tensor(envs.reset()).to(device),device)
+    reshape_observation_minified(torch.Tensor(envs.reset()).to(device), device)
 next_done = torch.zeros(args.num_envs).to(device)
 num_updates = args.total_timesteps // args.batch_size
 
@@ -197,7 +199,7 @@ for update in range(starting_update, num_updates + 1):
             try:
                 raw_obs, rs, ds, infos = envs.step(java_valid_actions)
                 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-                    reshape_observation_extended(torch.Tensor(raw_obs).to(device), device)
+                    reshape_observation_minified(torch.Tensor(raw_obs).to(device), device)
             except Exception as e:
                 e.printStackTrace()
                 raise
@@ -262,8 +264,10 @@ for update in range(starting_update, num_updates + 1):
     b_unit_positions = unit_positions.reshape(unit_positions.shape[0] * unit_positions.shape[1],
                                               unit_positions.shape[2])
     b_unit_masks = unit_masks.reshape(unit_masks.shape[0] * unit_masks.shape[1], unit_masks.shape[2])
-    b_enemy_unit_masks = enemy_unit_masks.reshape(enemy_unit_masks.shape[0] * enemy_unit_masks.shape[1], enemy_unit_masks.shape[2])
-    b_neutral_unit_masks = neutral_unit_masks.reshape(neutral_unit_masks.shape[0] * neutral_unit_masks.shape[1], neutral_unit_masks.shape[2])
+    b_enemy_unit_masks = enemy_unit_masks.reshape(enemy_unit_masks.shape[0] * enemy_unit_masks.shape[1],
+                                                  enemy_unit_masks.shape[2])
+    b_neutral_unit_masks = neutral_unit_masks.reshape(neutral_unit_masks.shape[0] * neutral_unit_masks.shape[1],
+                                                      neutral_unit_masks.shape[2])
 
     b_logprobs = logprobs.reshape(-1)
     b_actions = actions.reshape((-1,) + action_space_shape)
@@ -352,7 +356,6 @@ for update in range(starting_update, num_updates + 1):
             # wandb.run.save(f'agent_{update}.pt', policy='now')
             # wandb.run.save(f'optimizer_{update}.pt', policy='now')
             wandb.run.save(f'*.pt', policy='now')
-
 
             print('Synced agent state to wandb')
 

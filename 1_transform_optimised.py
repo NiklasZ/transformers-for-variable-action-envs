@@ -14,7 +14,7 @@ import time
 import random
 import os
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecVideoRecorder
-from helpers import reshape_observation
+from transformer_agent.agent import reshape_observation
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')
