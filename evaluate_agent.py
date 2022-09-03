@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from gym.wrappers.monitoring import video_recorder
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -28,6 +29,7 @@ from transformer_agent.agent import Agent, reshape_observation
 from transformer_agent.embedded_agent import EmbeddedAgent
 from transformer_agent.mixed_embedded_agent import MixedEmbeddedAgent, reshape_observation_mixed_embedded
 from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
+from jpype.types import JArray, JInt
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PPO agent')
@@ -47,17 +49,13 @@ if __name__ == "__main__":
     parser.add_argument('--prod-mode', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
                         help='run the script in production mode and use wandb to log outputs')
     parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
-                        help='weather to capture videos of the agent performances (check out `videos` folder)')
+                        help='whether to capture videos of the agent performances (check out `videos` folder)')
     parser.add_argument('--wandb-project-name', type=str, default="cleanRL",
                         help="the wandb's project name")
     parser.add_argument('--wandb-entity', type=str, default=None,
                         help="the entity (team) of wandb's project")
 
     # Algorithm specific arguments
-    parser.add_argument('--num-bot-envs', type=int, default=0,
-                        help='the number of bot game environment; 16 bot envs measn 16 games')
-    parser.add_argument('--num-selfplay-envs', type=int, default=16,
-                        help='the number of self play envs; 16 self play envs means 8 games')
     parser.add_argument('--num-steps', type=int, default=256,
                         help='the number of steps per game environment')
     parser.add_argument('--num-eval-runs', type=int, default=10,
@@ -78,7 +76,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.seed:
         args.seed = int(time.time())
-args.num_envs = args.num_selfplay_envs + args.num_bot_envs
 
 
 class VecMonitor(VecEnvWrapper):
@@ -116,7 +113,6 @@ class VecMonitor(VecEnvWrapper):
 
 
 class MicroRTSStatsRecorder(VecEnvWrapper):
-
     def reset(self):
         obs = self.venv.reset()
         self.raw_rewards = [[] for _ in range(self.num_envs)]
@@ -138,8 +134,28 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
         return obs, rews, dones, newinfos
 
 
+class ModifiedVideoRecorder(VecVideoRecorder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def start_video_recorder(self, counter='') -> None:
+        self.close_video_recorder()
+
+        video_name = f"evaluation-game-{counter}"
+        base_path = os.path.join(self.video_folder, video_name)
+        self.video_recorder = video_recorder.VideoRecorder(
+            env=self.env, base_path=base_path, metadata={"step_id": self.step_id}
+        )
+
+        self.video_recorder.capture_frame()
+        self.recorded_frames = 1
+        self.recording = True
+
+
 # TRY NOT TO MODIFY: setup the environment
 experiment_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
+print(f'Running experiment {experiment_name}')
+
 writer = SummaryWriter(f"runs/{experiment_name}")
 writer.add_text('hyperparameters', "|param|value|\n|-|-|\n%s" % (
     '\n'.join([f"|{key}|{value}|" for key, value in vars(args).items()])))
@@ -179,26 +195,27 @@ ai_envs = []
 
 for i in range(len(ais)):
     # if args.exp_name in gridnet_exps:
-    envs = MicroRTSGridModeVecEnv(
+    env = MicroRTSGridModeVecEnv(
         num_bot_envs=1,
         num_selfplay_envs=0,
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=[ais[i]],
-        map_path="maps/16x16/basesWorkers16x16.xml",
-        #map_path="maps/8x8/basesWorkers8x8.xml",
+        # map_path="maps/16x16/basesWorkers16x16.xml",
+        map_path="maps/8x8/basesWorkers8x8.xml",
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
-    envs = MicroRTSStatsRecorder(envs)
-    envs = VecMonitor(envs)
-    # envs = VecVideoRecorder(envs, f'videos/{experiment_name}/{ai_names[i]}',
-    #                         record_video_trigger=lambda x: x % 4000 == 0, video_length=2000)
-    ai_envs += [envs]
-assert isinstance(envs.action_space, MultiDiscrete), "only MultiDiscrete action space is supported"
+    env = MicroRTSStatsRecorder(env)
+    env = VecMonitor(env)
+    # Note, we don't use an episode step-trigger as episodes have a variable number of steps.
+    env = ModifiedVideoRecorder(env, f'videos/{experiment_name}/{ai_names[i]}',
+                                record_video_trigger=lambda x: False, video_length=2000)
+    ai_envs += [env]
+assert isinstance(env.action_space, MultiDiscrete), "only MultiDiscrete action space is supported"
 
-mapsize = 16 * 16
-agent = MixedEmbeddedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons).to(device)
-# agent = Agent(mapsize, envs, device).to(device)
+mapsize = 8 * 8
+#agent = MixedEmbeddedAgent(mapsize, env, device, args.transformer_layers, args.feed_forward_neurons).to(device)
+agent = WeightedAgent(mapsize, env, device).to(device)
 agent.load_state_dict(torch.load(args.agent_model_path, map_location=device))
 agent.eval()
 
@@ -209,10 +226,10 @@ total_params = sum([param.nelement() for param in agent.parameters()])
 print("Model's total parameters:", total_params)
 writer.add_scalar(f"charts/total_parameters", total_params, 0)
 # ALGO Logic: Storage for epoch data
-action_space_shape = (mapsize, envs.action_space.shape[0] - 1)
-invalid_action_shape = (mapsize, envs.action_space.nvec[1:].sum() + 1)
+action_space_shape = (mapsize, env.action_space.shape[0] - 1)
+invalid_action_shape = (mapsize, env.action_space.nvec[1:].sum() + 1)
 
-obs = torch.zeros((args.num_steps, args.num_envs) + envs.observation_space.shape).to(device)
+obs = torch.zeros((args.num_steps, args.num_envs) + env.observation_space.shape).to(device)
 actions = torch.zeros((args.num_steps, args.num_envs) + action_space_shape).to(device)
 logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
 rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -222,77 +239,71 @@ invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + invalid_act
 # TRY NOT TO MODIFY: start the game
 global_step = 0
 start_time = time.time()
-entity_counts = mapsize*[0]
+entity_counts = mapsize * [0]
 
-for envs_idx, envs in enumerate(ai_envs):
-    next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-        reshape_observation_mixed_embedded(torch.Tensor(envs.reset()).to(device), device)
-    # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = \
-    #     reshape_observation(torch.Tensor(envs.reset()).to(device), device)
+for envs_idx, env in enumerate(ai_envs):
+    # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
+    #     reshape_observation_mixed_embedded(torch.Tensor(env.reset()).to(device), device)
+    next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = \
+        reshape_observation(torch.Tensor(env.reset()).to(device), device)
     next_done = torch.zeros(args.num_envs).to(device)
-    game_count = 0
     entity_counts[next_entity_count.cpu().numpy()[0]] += 1
     print('entity counts:')
     print(entity_counts)
 
-    from jpype.types import JArray, JInt
+    for g in range(args.num_eval_runs):
+        done = False
+        env.start_video_recorder(g+1)
+        while not done:
+            env.render()
+            # ALGO LOGIC: put action logic here
+            with torch.no_grad():
+                action, logproba, _, invalid_action_mask = agent.get_action(next_obs,
+                                                                            next_entity_mask,
+                                                                            next_entity_count,
+                                                                            next_unit_position,
+                                                                            next_unit_mask,
+                                                                            envs=env)
 
-    # This is a hack we use to stop the JVM from quitting inbetween runs
-    # if envs_idx >= 1:
-    #     ai_envs[-1].close()
+            # TRY NOT TO MODIFY: execute the game and log data.
+            # the real action adds the source units
+            real_action = torch.cat([
+                torch.stack(
+                    [torch.arange(0, mapsize, device=device) for i in range(env.num_envs)
+                     ]).unsqueeze(2), action], 2)
 
-    while True:
-        #envs.render()
-        # ALGO LOGIC: put action logic here
-        with torch.no_grad():
-            action, logproba, _, invalid_action_mask = agent.get_action(next_obs,
-                                                                        next_entity_mask,
-                                                                        next_entity_count,
-                                                                        next_unit_position,
-                                                                        next_unit_mask,
-                                                                        envs=envs)
+            # at this point, the `real_action` has shape (num_envs, map_height*map_width, 8)
+            # so as to predict an action for each cell in the map; this obviously include a
+            # lot of invalid actions at cells for which no source units exist, so the rest of
+            # the code removes these invalid actions to speed things up
+            real_action = real_action.cpu().numpy()
+            valid_actions = real_action[invalid_action_mask[:, :, 0].bool().cpu().numpy()]
+            valid_actions_counts = invalid_action_mask[:, :, 0].sum(1).long().cpu().numpy()
+            java_valid_actions = []
+            valid_action_idx = 0
+            for env_idx, valid_action_count in enumerate(valid_actions_counts):
+                java_valid_action = []
+                for c in range(valid_action_count):
+                    java_valid_action += [JArray(JInt)(valid_actions[valid_action_idx])]
+                    valid_action_idx += 1
+                java_valid_actions += [JArray(JArray(JInt))(java_valid_action)]
+            java_valid_actions = JArray(JArray(JArray(JInt)))(java_valid_actions)
 
-        # TRY NOT TO MODIFY: execute the game and log data.
-        # the real action adds the source units
-        real_action = torch.cat([
-            torch.stack(
-                [torch.arange(0, mapsize, device=device) for i in range(envs.num_envs)
-                 ]).unsqueeze(2), action], 2)
+            try:
+                # raw_obs, rs, ds, infos = env.step(java_valid_actions)
+                # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
+                #     reshape_observation_mixed_embedded(torch.Tensor(raw_obs).to(device), device)
+                entity_counts[next_entity_count.cpu().numpy()[0]] += 1
+                raw_obs, rs, ds, infos = env.step(java_valid_actions)
+                next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = reshape_observation(
+                    torch.Tensor(raw_obs).to(device), device)
+            except Exception as e:
+                e.printStackTrace()
+                raise
 
-        # at this point, the `real_action` has shape (num_envs, map_height*map_width, 8)
-        # so as to predict an action for each cell in the map; this obviously include a
-        # lot of invalid actions at cells for which no source units exist, so the rest of
-        # the code removes these invalid actions to speed things up
-        real_action = real_action.cpu().numpy()
-        valid_actions = real_action[invalid_action_mask[:, :, 0].bool().cpu().numpy()]
-        valid_actions_counts = invalid_action_mask[:, :, 0].sum(1).long().cpu().numpy()
-        java_valid_actions = []
-        valid_action_idx = 0
-        for env_idx, valid_action_count in enumerate(valid_actions_counts):
-            java_valid_action = []
-            for c in range(valid_action_count):
-                java_valid_action += [JArray(JInt)(valid_actions[valid_action_idx])]
-                valid_action_idx += 1
-            java_valid_actions += [JArray(JArray(JInt))(java_valid_action)]
-        java_valid_actions = JArray(JArray(JArray(JInt)))(java_valid_actions)
-
-        try:
-            raw_obs, rs, ds, infos = envs.step(java_valid_actions)
-            next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-                reshape_observation_mixed_embedded(torch.Tensor(raw_obs).to(device), device)
-            entity_counts[next_entity_count.cpu().numpy()[0]] += 1
-            # raw_obs, rs, ds, infos = envs.step(java_valid_actions)
-            # next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask = reshape_observation(
-            #     torch.Tensor(raw_obs).to(device), device)
-        except Exception as e:
-            e.printStackTrace()
-            raise
-
-        for idx, info in enumerate(infos):
+            info = infos[0]
+            # When an episode finishes
             if 'episode' in info.keys():
-                # print(f"global_step={global_step}, episode_reward={info['episode']['r']}")
-                # writer.add_scalar("charts/episode_reward", info['episode']['r'], global_step)
-
                 print("against", ai_names[envs_idx], info['microrts_stats']['WinLossRewardFunction'])
                 if info['microrts_stats']['WinLossRewardFunction'] == -1.0:
                     ai_match_stats[ai_names[envs_idx]][0] += 1
@@ -300,26 +311,17 @@ for envs_idx, envs in enumerate(ai_envs):
                     ai_match_stats[ai_names[envs_idx]][1] += 1
                 elif info['microrts_stats']['WinLossRewardFunction'] == 1.0:
                     ai_match_stats[ai_names[envs_idx]][2] += 1
-                game_count += 1
-                # writer.add_scalar(f"charts/episode_reward/{key}", , global_step)
-                # for key in info['microrts_stats']:
-                #     writer.add_scalar(f"charts/episode_reward/{key}", info['microrts_stats'][key], global_step)
-                # print("=============================================")
-                # break
-        if game_count >= args.num_eval_runs:
-            # envs.close()
-            for (label, val) in zip(["loss", "tie", "win"], ai_match_stats[ai_names[envs_idx]]):
-                writer.add_scalar(f"charts/{ai_names[envs_idx]}/{label}", val, 0)
-            if args.prod_mode and args.capture_video:
-                video_files = glob.glob(f'videos/{experiment_name}/{ai_names[envs_idx]}/*.mp4')
-                for video_file in video_files:
-                    print(video_file)
-                    wandb.log({f"RL agent against {ai_names[envs_idx]}": wandb.Video(video_file)})
-                # labels, values = ["loss", "tie", "win"], ai_match_stats[ai_names[envs_idx]]
-                # data = [[label, val] for (label, val) in zip(labels, values)]
-                # table = wandb.Table(data=data, columns = ["match result", "number of games"])
-                # wandb.log({ai_names[envs_idx]: wandb.plot.bar(table, "match result", "number of games", title=f"RL agent against {ai_names[envs_idx]}")})
-            break
+
+                done = True
+                env.close_video_recorder()
+
+        for (label, val) in zip(["loss", "tie", "win"], ai_match_stats[ai_names[envs_idx]]):
+            writer.add_scalar(f"charts/{ai_names[envs_idx]}/{label}", val, 0)
+        if args.prod_mode and args.capture_video:
+            video_files = glob.glob(f'videos/{experiment_name}/{ai_names[envs_idx]}/*.mp4')
+            for video_file in video_files:
+                print(video_file)
+                wandb.log({f"RL agent against {ai_names[envs_idx]}": wandb.Video(video_file)})
 
 print(ai_match_stats)
 n_rows, n_cols = 3, 5
@@ -345,5 +347,5 @@ if args.prod_mode:
     # table = wandb.Table(data=data, columns = ["cumulative match result", "number of games"])
     # wandb.log({"cumulative": wandb.plot.bar(table, "cumulative match result", "number of games", title="RL agent cumulative results")})
 
-envs.close()
+env.close()
 writer.close()

@@ -69,7 +69,7 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
 
 
 def create_envs(args: dict) -> Tuple[Union[VecMonitor, VecVideoRecorder], List[str]]:
-    if args['num_envs'] < 12:
+    if args['num_bot_envs'] < 12:
         ai_opponents = [microrts_ai.coacAI for _ in range(args['num_bot_envs'])]
     else:
         ai_opponents = [microrts_ai.coacAI for _ in range(args['num_bot_envs'] - 6)] + \
