@@ -1,26 +1,12 @@
 from typing import Tuple
-
 import numpy as np
 import torch
 from torch import nn
-
-from transformer_agent.agent import Actor, CategoricalMasked
-from transformer_agent.weighted_agent import WeightedAgent, WeightedCritic
 from torch.nn import functional as F
 
+from transformer_agent.base_agent import Actor, CategoricalMasked
+from transformer_agent.weighted_agent import WeightedCritic
 
-# class MinifiedWeightedAgent(WeightedAgent):
-#     def __init__(self, map_height, map_width, envs, device, num_layers=5, dim_feedforward=512, num_heads=5, padding=2):
-#         super(MinifiedWeightedAgent, self).__init__(map_height * map_width, envs, device, num_layers, dim_feedforward,
-#                                                     num_heads, padding)
-#         self.input_size = (map_height + map_width + 5 + 5 + 3 + 8 + 6) # 43 on an 8x8 map. 43 is a prime number though.
-#         self.padded_size = self.padding + self.input_size # So we add 2 which gives us 45.
-#         encoder_layer = nn.TransformerEncoderLayer(d_model=self.padded_size,
-#                                                    nhead=self.num_heads,
-#                                                    dim_feedforward=dim_feedforward)
-#         self.network = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-#         self.actor = Actor(self.padded_size, self.map_size, envs, device)
-#         self.critic = WeightedCritic(device, self.padded_size, envs)
 
 class MinifiedWeightedAgent(nn.Module):
     def __init__(self, map_height, map_width, envs, device, num_layers=5, dim_feedforward=512, num_heads=5, padding=2):
@@ -44,7 +30,7 @@ class MinifiedWeightedAgent(nn.Module):
         if (self.input_size + self.padding) % num_heads != 0:
             raise Exception(
                 f'The input size of {self.input_size} + padding {self.padding} are not divisible by {self.num_heads}')
-        self.padded_size = self.padding + self.input_size # So we add 2 which gives us 45.
+        self.padded_size = self.padding + self.input_size  # So we add 2 which gives us 45.
         # Ignore dropout for now
         self.dropout = 0
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.padded_size,

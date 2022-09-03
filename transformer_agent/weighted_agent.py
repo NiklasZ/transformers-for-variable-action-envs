@@ -1,10 +1,9 @@
 from typing import Tuple
-
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from transformer_agent.agent import layer_init, Agent
+from transformer_agent.base_agent import layer_init, Agent
 
 
 class WeightedCritic(nn.Module):

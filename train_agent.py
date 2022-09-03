@@ -1,5 +1,3 @@
-import sys
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,8 +7,7 @@ import numpy as np
 import time
 import random
 import os
-
-from transformer_agent.mixed_embedded_agent import MixedEmbeddedAgent, reshape_observation_mixed_embedded
+from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
 from transformer_agent.arg_handler import get_run_args
 from transformer_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
@@ -61,7 +58,7 @@ args.minibatch_size = int(args.batch_size // args.n_minibatch)
 
 # TRY NOT TO MODIFY: seeding
 device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
-#device = 'cpu'
+# device = 'cpu'
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -72,9 +69,9 @@ envs, ai_opponent_names = create_envs(vars(args))
 
 mapsize = args.map_size ** 2
 # Used for transformers
-observation_size = (1 + 5 + 5 + 3 + 8 + 6)  # 27 features + 1 for position
-agent = MixedEmbeddedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons,
-                           args.attention_heads, args.input_padding, args.embed_size).to(device)
+observation_size = (mapsize + 5 + 5 + 3 + 8 + 6)
+agent = WeightedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons,
+                      args.attention_heads, args.input_padding).to(device)
 agent.network_size()
 optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 if args.anneal_lr:
@@ -87,13 +84,11 @@ observation_shape = envs.observation_space.shape
 invalid_action_shape = (mapsize, envs.action_space.nvec[1:].sum() + 1)
 
 obs = torch.zeros(
-    (args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1], observation_size),
-    dtype=torch.int16).to(device)
+    (args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1], observation_size)).to(device)
 entity_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
                           dtype=torch.bool).to(device)
-entity_counts = torch.zeros((args.num_steps, args.num_envs), dtype=torch.int64).to(device)
-unit_positions = torch.zeros((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
-                             dtype=torch.bool).to(device)
+entity_counts = torch.zeros((args.num_steps, args.num_envs), dtype=torch.long).to(device)
+unit_positions = torch.zeros((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1])).to(device)
 unit_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
                         dtype=torch.bool).to(device)
 enemy_unit_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
@@ -101,19 +96,19 @@ enemy_unit_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[
 neutral_unit_masks = torch.ones((args.num_steps, args.num_envs, observation_shape[0] * observation_shape[1]),
                                 dtype=torch.bool).to(device)
 
-actions = torch.zeros((args.num_steps, args.num_envs) + action_space_shape, dtype=torch.int16).to(device)
+actions = torch.zeros((args.num_steps, args.num_envs) + action_space_shape).to(device)
 logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
 rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
 values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + invalid_action_shape, dtype=torch.bool).to(device)
+invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) + invalid_action_shape).to(device)
 # TRY NOT TO MODIFY: start the game
 global_step = 0
 start_time = time.time()
 # Note how `next_obs` and `next_done` are used; their usage is equivalent to
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/84a7582477fb0d5c82ad6d850fe476829dddd2e1/a2c_ppo_acktr/storage.py#L60
 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-    reshape_observation_mixed_embedded(torch.Tensor(envs.reset()).to(device), device)
+    reshape_observation_extended(torch.Tensor(envs.reset()).to(device), device)
 next_done = torch.zeros(args.num_envs).to(device)
 num_updates = args.total_timesteps // args.batch_size
 
@@ -136,9 +131,6 @@ if args.prod_mode and wandb.run.resumed:
     print(f"resumed at update {starting_update}")
 
 for update in range(starting_update, num_updates + 1):
-    # Clean out of reference tensors
-    torch.cuda.empty_cache()
-
     # Annealing the rate if instructed to do so.
     if args.anneal_lr:
         frac = 1.0 - (update - 1.0) / num_updates
@@ -203,7 +195,7 @@ for update in range(starting_update, num_updates + 1):
             try:
                 raw_obs, rs, ds, infos = envs.step(java_valid_actions)
                 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-                    reshape_observation_mixed_embedded(torch.Tensor(raw_obs).to(device), device)
+                    reshape_observation_extended(torch.Tensor(raw_obs).to(device), device)
             except Exception as e:
                 e.printStackTrace()
                 raise
@@ -228,7 +220,6 @@ for update in range(starting_update, num_updates + 1):
                         running_reward = win_reward
                     break
     # bootstrap reward if not done. reached the batch limit
-    # print('Calculating Advantage...')
     with torch.no_grad():
         last_value = agent.get_value(next_obs.to(device),
                                      next_entity_mask.to(device),
@@ -280,7 +271,6 @@ for update in range(starting_update, num_updates + 1):
     b_values = values.reshape(-1)
     b_invalid_action_masks = invalid_action_masks.reshape((-1,) + invalid_action_shape)
 
-    torch.cuda.empty_cache()
     # Optimising the policy and value network
     inds = np.arange(args.batch_size, )
     print('Running PPO...\n')
@@ -299,10 +289,9 @@ for update in range(starting_update, num_updates + 1):
                 b_entity_counts[minibatch_ind],
                 b_unit_positions[minibatch_ind],
                 b_unit_masks[minibatch_ind],
-                b_actions[minibatch_ind],
+                b_actions.long()[minibatch_ind],
                 b_invalid_action_masks[minibatch_ind],
                 envs)
-
             ratio = (newlogproba - b_logprobs[minibatch_ind]).exp()
 
             # Stats

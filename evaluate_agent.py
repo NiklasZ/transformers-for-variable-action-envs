@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import glob
 
-from transformer_agent.agent import Agent, reshape_observation
+from transformer_agent.base_agent import Agent, reshape_observation
 from transformer_agent.embedded_agent import EmbeddedAgent
 from transformer_agent.mixed_embedded_agent import MixedEmbeddedAgent, reshape_observation_mixed_embedded
 from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended

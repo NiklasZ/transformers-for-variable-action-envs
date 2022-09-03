@@ -10,11 +10,11 @@ import time
 import random
 import os
 
-from transformer_agent.embedded_agent import reshape_observation_embedded, EmbeddedAgent
-from transformer_agent.mixed_embedded_agent import MixedEmbeddedAgent
-from transformer_agent.weighted_agent import WeightedAgent
-from transformer_agent.arg_handler import get_run_args
-from transformer_agent.micro_rts_env import create_envs
+from train_agent.embedded_agent import reshape_observation_embedded, EmbeddedAgent
+from train_agent.mixed_embedded_agent import MixedEmbeddedAgent
+from train_agent.weighted_agent import WeightedAgent
+from train_agent.arg_handler import get_run_args
+from train_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
 import wandb
 from argparse import Namespace

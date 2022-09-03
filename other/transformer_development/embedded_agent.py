@@ -4,9 +4,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from transformer_agent.agent import Actor, CategoricalMasked
-from transformer_agent.weighted_agent import WeightedCritic
 from torch.nn import functional as F
+
+from transformer_agent.base_agent import Actor, CategoricalMasked
+from transformer_agent.weighted_agent import WeightedCritic
 
 
 def reshape_observation_embedded(x: torch.Tensor, device: str) -> Tuple[

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from transformer_agent.agent import CategoricalMasked
+from transformer_agent.base_agent import CategoricalMasked
 from transformer_agent.weighted_agent import WeightedAgent
 
 

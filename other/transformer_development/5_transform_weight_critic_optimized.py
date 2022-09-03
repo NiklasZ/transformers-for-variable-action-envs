@@ -10,11 +10,11 @@ import time
 import random
 import os
 from helpers import MessageFilter
-from transformer_agent.agent import Agent, reshape_observation
-from transformer_agent.optimised_weighted_agent import OptimisedWeightedAgent
-from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
-from transformer_agent.arg_handler import get_run_args
-from transformer_agent.micro_rts_env import create_envs
+from train_agent.agent import Agent, reshape_observation
+from train_agent.optimised_weighted_agent import OptimisedWeightedAgent
+from train_agent.weighted_agent import WeightedAgent, reshape_observation_extended
+from train_agent.arg_handler import get_run_args
+from train_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
 import wandb
 from argparse import Namespace

@@ -7,10 +7,10 @@ import numpy as np
 import time
 import random
 import os
-from transformer_agent.agent import Agent, reshape_observation
-from transformer_agent.arg_handler import get_run_args
+from train_agent.agent import Agent, reshape_observation
+from train_agent.arg_handler import get_run_args
 import wandb
-from transformer_agent.micro_rts_env import create_envs
+from train_agent.micro_rts_env import create_envs
 
 if __name__ == "__main__":
     args = vars(get_run_args())

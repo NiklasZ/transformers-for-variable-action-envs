@@ -9,9 +9,10 @@ import numpy as np
 import time
 import random
 import os
-from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_extended
-from transformer_agent.arg_handler import get_run_args
-from transformer_agent.micro_rts_env import create_envs
+from train_agent.minified_agent import MinifiedWeightedAgent, reshape_observation_minified
+from train_agent.weighted_agent import WeightedAgent
+from train_agent.arg_handler import get_run_args
+from train_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
 import wandb
 from argparse import Namespace
@@ -71,9 +72,10 @@ envs, ai_opponent_names = create_envs(vars(args))
 
 mapsize = args.map_size ** 2
 # Used for transformers
-observation_size = (mapsize + 5 + 5 + 3 + 8 + 6)
-agent = WeightedAgent(mapsize, envs, device, args.transformer_layers, args.feed_forward_neurons,
-                      args.attention_heads, args.input_padding).to(device)
+observation_size = (args.map_size * 2 + 5 + 5 + 3 + 8 + 6)
+agent = MinifiedWeightedAgent(args.map_size, args.map_size, envs, device, args.transformer_layers,
+                              args.feed_forward_neurons,
+                              args.attention_heads, args.input_padding).to(device)
 agent.network_size()
 optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 if args.anneal_lr:
@@ -110,7 +112,7 @@ start_time = time.time()
 # Note how `next_obs` and `next_done` are used; their usage is equivalent to
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/84a7582477fb0d5c82ad6d850fe476829dddd2e1/a2c_ppo_acktr/storage.py#L60
 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-    reshape_observation_extended(torch.Tensor(envs.reset()).to(device), device)
+    reshape_observation_minified(torch.Tensor(envs.reset()).to(device), device)
 next_done = torch.zeros(args.num_envs).to(device)
 num_updates = args.total_timesteps // args.batch_size
 
@@ -197,7 +199,7 @@ for update in range(starting_update, num_updates + 1):
             try:
                 raw_obs, rs, ds, infos = envs.step(java_valid_actions)
                 next_obs, next_entity_mask, next_entity_count, next_unit_position, next_unit_mask, next_enemy_unit_mask, next_neutral_unit_mask = \
-                    reshape_observation_extended(torch.Tensor(raw_obs).to(device), device)
+                    reshape_observation_minified(torch.Tensor(raw_obs).to(device), device)
             except Exception as e:
                 e.printStackTrace()
                 raise

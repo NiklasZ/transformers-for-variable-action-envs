@@ -3,7 +3,8 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from transformer_agent.agent import Actor, CategoricalMasked
+
+from transformer_agent.base_agent import Actor, CategoricalMasked
 from transformer_agent.weighted_agent import WeightedCritic
 
 
