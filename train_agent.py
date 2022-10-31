@@ -11,12 +11,14 @@ from transformer_agent.weighted_agent import WeightedAgent, reshape_observation_
 from transformer_agent.arg_handler import get_run_args
 from transformer_agent.micro_rts_env import create_envs
 from jpype.types import JArray, JInt
-import wandb
 from argparse import Namespace
 
 if __name__ == "__main__":
     args = get_run_args()
     resumed = args.command == 'resume'
+
+    if args.prod_mode:
+        import wandb
 
     if resumed:
         print(f'Resuming run {args.run_id}')
