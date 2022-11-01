@@ -91,8 +91,6 @@ class Agent(nn.Module):
         # The rest are one-hot encodings of the observation features:
         # hit points, resources, owner, unit types, current action
         # On an 8 x 8 map this is 91
-        # TODO by fixing this embed size we are limiting model parameter size.
-        # TODO I should consider a compacter format that generates an embedding.
         self.input_size = (map_size + 5 + 5 + 3 + 8 + 6)
         # How much to pad an input with so the size works for the number of attention heads.
         self.padding = padding
@@ -128,7 +126,6 @@ class Agent(nn.Module):
                    player_unit_position,
                    player_unit_mask,
                    action=None, invalid_action_masks=None, envs=None):
-        # x_reshaped, bool_mask, player_unit_pos, player_unit_counts = self.reshape_for_transformer(x)
         # There's no point in passing in tensors we will mask out anyway, so we trim them here.
         max_units_in_batch = torch.max(entity_count)
         trimmed_x = x[:, :max_units_in_batch, :]

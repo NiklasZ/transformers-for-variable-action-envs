@@ -100,7 +100,6 @@ class MixedEmbeddedAgent(nn.Module):
                    player_unit_position,
                    player_unit_mask,
                    action=None, invalid_action_masks=None, envs=None):
-        # x_reshaped, bool_mask, player_unit_pos, player_unit_counts = self.reshape_for_transformer(x)
         # There's no point in passing in tensors we will mask out anyway, so we trim them here.
         max_units_in_batch = torch.max(entity_count)
         trimmed_x = x[:, :max_units_in_batch, :]
