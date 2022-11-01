@@ -3,7 +3,10 @@ This is the repository associated with the research paper "Transformers as Polic
 It describes a scalable transformer architecture that is used to train an RL agent in the [Micro-RTS environment](https://github.com/Farama-Foundation/MicroRTS-Py). 
 We provide installation and running instructions in the following sections.
 
-![alt text](media/example_RL_agent_vs_coacAI.gif)
+
+<p align="center">
+  <img src="media/example_RL_agent_vs_coacAI.gif" alt="animated" />
+</p>
 
 ## Installation
 Install dependencies with `pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu113`. 
