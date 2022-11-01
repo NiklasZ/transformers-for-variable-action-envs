@@ -5,6 +5,4 @@ runs
 videos
 wandb
 all_data.csv
-backups
 models
-/backups/N_8_transform_position_embedded_16x16-64_embedding_1_1658744799_2j2vk0pt/
