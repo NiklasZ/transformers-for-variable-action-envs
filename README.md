@@ -16,7 +16,7 @@ you will need to modify `requirements.txt`.
 
 ## Training
 During training, we use [Weights and Biases](https://wandb.ai/) to checkpoint and monitor the agent. 
-We provide an example runs of the agent [here](https://wandb.ai/niklasz/public_var_action_transformers?workspace=user-niklasz). 
+We provide an example runs of the agent [here](https://wandb.ai/niklasz/public_var_action_transformers). 
 You can enable wandb by using the flag `--prod-mode`. We have two trainable agents:
 - `train_agent.py` -  a basic transformer network that can train on the 8x8 map.
 - `train_embedded_agent.py` - same a `train_agent.py` but we use an embedding on the input to accommodate a larger 16x16 map.
