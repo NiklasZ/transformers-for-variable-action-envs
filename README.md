@@ -1,6 +1,6 @@
 # Transformers as Policies for Variable Action Environments
-This is the repository associated with the research paper "Transformers as Policies for Variable Action Environments" **(TODO: URL)** presented at the 18th AAAI Conference on Artificial Intelligence and Interactive Digital Entertainment (AIIDE-22) - Strategy games. 
-It describes a scalable transformer architecture that is used to train an RL agent in the [Micro-RTS environment](https://github.com/Farama-Foundation/MicroRTS-Py). 
+This is the repository associated with the research paper "Transformers as Policies for Variable Action Environments" ([paper](https://arxiv.org/abs/2301.03679)) presented at the 18th AAAI Conference on Artificial Intelligence and Interactive Digital Entertainment ([AIIDE-22](https://sites.google.com/view/aiide-2022/?pli=1)) - Strategy games. 
+It describes a scalable transformer architecture that is used to train an RL agent in the [Micro-RTS environment](https://github.com/Farama-Foundation/MicroRTS-Py), which has managed to outperform other RL agents in this environment in terms of computational cost and episodic return.
 We provide installation and running instructions in the following sections.
 
 
@@ -71,6 +71,16 @@ Where [example_models](example_models) contains the already trained models. If u
 We also provide the generated output evaluation under [evaluation](evaluation).
 
 ## Cite this Repository
-**TODO: put on arxiv**
+This paper is still waiting for the publisher to release the notebook. For now, please cite as:
+```
+@misc{zwingenberger2023transformers,
+      title={Transformers as Policies for Variable Action Environments}, 
+      author={Niklas Zwingenberger},
+      year={2023},
+      eprint={2301.03679},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI}
+}
+```
 
 
