@@ -71,15 +71,20 @@ Where [example_models](example_models) contains the already trained models. If u
 We also provide the generated output evaluation under [evaluation](evaluation).
 
 ## Cite this Repository
-This paper is still waiting for the publisher to release the notebook. For now, please cite as:
 ```
-@misc{zwingenberger2023transformers,
-      title={Transformers as Policies for Variable Action Environments}, 
-      author={Niklas Zwingenberger},
-      year={2023},
-      eprint={2301.03679},
-      archivePrefix={arXiv},
-      primaryClass={cs.AI}
+@article{DBLP:journals/corr/abs-2301-03679,
+  author       = {Niklas Zwingenberger},
+  title        = {Transformers as Policies for Variable Action Environments},
+  journal      = {CoRR},
+  volume       = {abs/2301.03679},
+  year         = {2023},
+  url          = {https://doi.org/10.48550/arXiv.2301.03679},
+  doi          = {10.48550/ARXIV.2301.03679},
+  eprinttype   = {arXiv},
+  eprint       = {2301.03679},
+  timestamp    = {Thu, 19 Jan 2023 15:40:01 +0100},
+  biburl       = {https://dblp.org/rec/journals/corr/abs-2301-03679.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 ```
 
